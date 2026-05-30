@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { createSession, closeSession } from "./browser.js";
 import { ensureLogin } from "./login.js";
 import { typeTitle, insertContent, pasteImage } from "./editor.js";
-import { insertAIImage, setCover, setCoverFile } from "./images.js";
+import { setCoverFile } from "./images.js";
 import { generateImage, downloadImages } from "./jimeng.js";
 import { setDeclarations, publishArticle } from "./publish.js";
 import { CONFIG } from "./config.js";
