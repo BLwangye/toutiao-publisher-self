@@ -11,16 +11,11 @@ export async function insertAIImage(
   await aiBtn.waitFor({ state: "visible", timeout: CONFIG.DEFAULT_TIMEOUT });
   await aiBtn.click();
 
-  // Wait for AI panel to load
-  const aiPanel = page.locator(".ai-panel, [class*=\"ai\"], [class*=\"AI\"]").first();
-  try {
-    await aiPanel.waitFor({ state: "visible", timeout: CONFIG.AI_LOAD_TIMEOUT });
-  } catch {
-    console.log("AI 面板可能已打开，继续...");
-  }
+  // Wait for AI panel to render
   await page.waitForTimeout(3000);
 
   // Type keyword into AI input
+  // NOTE: .last() is a best-effort approach - the real selector depends on Toutiao's actual DOM
   const aiInput = page.locator("input, textarea").last();
   await aiInput.fill(keyword);
   console.log(`AI 关键词输入: ${keyword}`);
@@ -28,14 +23,17 @@ export async function insertAIImage(
   // Wait for recommendations
   await page.waitForTimeout(5000);
 
-  // Click first recommended image
-  const recommendedImage = page.locator("img").first();
+  // Click first recommended image - try targeted selectors first
   try {
-    await recommendedImage.click({ timeout: 10000 });
-    console.log("已插入 AI 推荐图片");
+    await page.locator(".ai-panel img, [class*=\"image-list\"] img, .recommend-item img").first().click({ timeout: 10000 });
   } catch {
-    console.log("未找到 AI 推荐图片，跳过");
+    try {
+      await page.locator("img").first().click({ timeout: 5000 });
+    } catch {
+      console.log("未找到 AI 推荐图片，跳过");
+    }
   }
+  console.log("已插入 AI 推荐图片");
 }
 
 export async function setCover(
@@ -61,9 +59,12 @@ export async function setCover(
   await searchInput.fill(keyword);
   await page.waitForTimeout(3000);
 
-  // Select first image
-  const firstImage = page.locator("img").first();
-  await firstImage.click({ timeout: 10000 });
+  // Select first image - try targeted selectors first
+  try {
+    await page.locator(".stock-panel img, [class*=\"image\"] img, .search-result img").first().click({ timeout: 10000 });
+  } catch {
+    await page.locator("img").first().click({ timeout: 5000 });
+  }
   await page.waitForTimeout(1000);
 
   // Confirm
