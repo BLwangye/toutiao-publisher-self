@@ -25,6 +25,7 @@ describe("editor module (unit)", () => {
 
     mockEl.innerHTML = "<p>test</p>";
     mockEl.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+    // CompositionEvent requires jsdom environment (not available in Node)
     mockEl.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
     mockEl.dispatchEvent(new Event("selectionchange", { bubbles: true }));
     mockEl.dispatchEvent(new Event("change", { bubbles: true }));
