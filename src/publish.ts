@@ -2,25 +2,29 @@ import { Page } from "playwright";
 import { CONFIG, SELECTORS, VERIFY_URL_PATTERNS } from "./config.js";
 
 export async function setDeclarations(page: Page): Promise<void> {
-  await page.evaluate(() => {
+  await page.evaluate(({ toutiaoFirst, citeAI, personalView }) => {
     const checkboxes = document.querySelectorAll<HTMLElement>('[role="checkbox"]');
 
     for (const el of checkboxes) {
-      if (el.textContent?.includes("头条首发")) {
+      if (el.textContent?.includes(toutiaoFirst)) {
         el.click();
       }
-      if (el.textContent?.includes("引用 AI")) {
+      if (el.textContent?.includes(citeAI)) {
         el.click();
       }
     }
 
     const radioElements = document.querySelectorAll<HTMLElement>('[role="radio"]');
     for (const el of radioElements) {
-      if (el.textContent?.includes("个人观点")) {
+      if (el.textContent?.includes(personalView)) {
         el.click();
         break;
       }
     }
+  }, {
+    toutiaoFirst: SELECTORS.DECLARATION_TOUTIAO_FIRST,
+    citeAI: SELECTORS.DECLARATION_CITE_AI,
+    personalView: SELECTORS.DECLARATION_PERSONAL_VIEW,
   });
 
   console.log("声明设置完成");
@@ -43,7 +47,7 @@ export async function clickPublish(page: Page): Promise<void> {
     return false;
   }, SELECTORS.PUBLISH_BTN);
   if (!foundPreview) {
-    console.warn("未找到预览并发布按钮");
+    throw new Error("未找到「预览并发布」按钮");
   }
 
   // Wait for preview to load
@@ -66,7 +70,7 @@ export async function clickPublish(page: Page): Promise<void> {
     return false;
   }, SELECTORS.CONFIRM_BTN);
   if (!foundConfirm) {
-    console.warn("未找到确认发布按钮");
+    throw new Error("未找到「确认发布」按钮");
   }
 
   console.log("已确认发布");

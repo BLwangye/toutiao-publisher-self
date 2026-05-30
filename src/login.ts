@@ -10,8 +10,8 @@ export async function ensureLogin(page: Page): Promise<boolean> {
       const username = await page.textContent('a[href*="toutiao.com/c/user"]');
       console.log(`已登录: ${username?.trim()}`);
       return true;
-    } catch {
-      // Not logged in, wait for manual login
+    } catch (err) {
+      console.log(`登录检测: 未找到用户信息 (${err instanceof Error ? err.message : err})`);
     }
 
     console.log("未登录，请在浏览器中手动登录（扫码或账号密码），等待自动检测...");

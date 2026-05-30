@@ -1,5 +1,5 @@
 import { Page } from "playwright";
-import { CONFIG } from "./config.js";
+import { CONFIG, SELECTORS } from "./config.js";
 
 export async function insertAIImage(
   page: Page,
@@ -7,7 +7,7 @@ export async function insertAIImage(
 ): Promise<void> {
   console.log("正在打开 AI 创作助手...");
 
-  const aiBtn = page.locator("button, span", { hasText: "AI" }).first();
+  const aiBtn = page.locator("button, span", { hasText: SELECTORS.AI_ASSISTANT }).first();
   await aiBtn.waitFor({ state: "visible", timeout: CONFIG.DEFAULT_TIMEOUT });
   await aiBtn.click();
 
@@ -49,7 +49,7 @@ export async function setCover(
   await page.waitForTimeout(1000);
 
   // Click "免费正版图片"
-  const freeStockBtn = page.locator("text=免费正版图片").first();
+  const freeStockBtn = page.locator("text=" + SELECTORS.FREE_STOCK_IMAGE).first();
   await freeStockBtn.waitFor({ state: "visible", timeout: CONFIG.DEFAULT_TIMEOUT });
   await freeStockBtn.click();
   await page.waitForTimeout(2000);
