@@ -14,9 +14,9 @@ export async function setDeclarations(page: Page): Promise<void> {
       }
     }
 
-    const allElements = document.querySelectorAll<HTMLElement>("*");
-    for (const el of allElements) {
-      if (el.textContent?.includes("个人观点") && el.getAttribute("role") === "radio") {
+    const radioElements = document.querySelectorAll<HTMLElement>('[role="radio"]');
+    for (const el of radioElements) {
+      if (el.textContent?.includes("个人观点")) {
         el.click();
         break;
       }
@@ -30,7 +30,7 @@ export async function clickPublish(page: Page): Promise<void> {
   console.log("点击发布...");
 
   // Click "预览并发布"
-  await page.evaluate((btnText) => {
+  const foundPreview = await page.evaluate((btnText) => {
     const buttons = Array.from(document.querySelectorAll<HTMLElement>("button, a, span, div"));
     const btn = buttons.find(
       (b) => b.textContent?.includes(btnText) && b.offsetParent !== null
@@ -42,12 +42,15 @@ export async function clickPublish(page: Page): Promise<void> {
     }
     return false;
   }, SELECTORS.PUBLISH_BTN);
+  if (!foundPreview) {
+    console.warn("未找到预览并发布按钮");
+  }
 
   // Wait for preview to load
   await page.waitForTimeout(3000);
 
   // Click "确认发布"
-  await page.evaluate((btnText) => {
+  const foundConfirm = await page.evaluate((btnText) => {
     const buttons = Array.from(
       document.querySelectorAll<HTMLElement>("button, a, span, div")
     );
@@ -62,6 +65,9 @@ export async function clickPublish(page: Page): Promise<void> {
     }
     return false;
   }, SELECTORS.CONFIRM_BTN);
+  if (!foundConfirm) {
+    console.warn("未找到确认发布按钮");
+  }
 
   console.log("已确认发布");
 }
@@ -91,12 +97,16 @@ export async function publishArticle(
   retries: number = CONFIG.PUBLISH_RETRY
 ): Promise<boolean> {
   for (let i = 0; i < retries; i++) {
-    await clickPublish(page);
-    const ok = await verifyPublish(page);
-    if (ok) return true;
+    try {
+      await clickPublish(page);
+      const ok = await verifyPublish(page);
+      if (ok) return true;
 
-    console.log(`发布验证失败，重试 ${i + 1}/${retries}...`);
-    await page.waitForTimeout(CONFIG.PUBLISH_RETRY_INTERVAL);
+      console.log(`发布验证失败，尝试 ${i + 1}/${retries}...`);
+      await page.waitForTimeout(CONFIG.PUBLISH_RETRY_INTERVAL);
+    } catch (err) {
+      console.error(`尝试 ${i + 1}/${retries} 失败:`, err);
+    }
   }
   return false;
 }
