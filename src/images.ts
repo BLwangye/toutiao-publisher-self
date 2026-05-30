@@ -73,3 +73,7 @@ export async function setCover(
   await page.waitForTimeout(3000);
   console.log("封面设置完成");
 }
+
+export async function setCoverFile(page: Page, imagePath: string): Promise<void> {
+  console.log("封面文件上传: " + imagePath);
+}

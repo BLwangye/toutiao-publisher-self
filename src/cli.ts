@@ -1,8 +1,9 @@
 import { Command } from "commander";
 import { createSession, closeSession } from "./browser.js";
 import { ensureLogin } from "./login.js";
-import { typeTitle, insertContent } from "./editor.js";
-import { insertAIImage, setCover } from "./images.js";
+import { typeTitle, insertContent, pasteImage } from "./editor.js";
+import { insertAIImage, setCover, setCoverFile } from "./images.js";
+import { generateImage, downloadImages } from "./jimeng.js";
 import { setDeclarations, publishArticle } from "./publish.js";
 import { CONFIG } from "./config.js";
 
@@ -42,14 +43,39 @@ program
       // Step 4: Insert content
       await insertContent(session.page, options.content);
 
-      // Step 5: AI images
+      // Step 5: Generate and insert AI images
       if (options.images && options.imageKeyword) {
-        await insertAIImage(session.page, options.imageKeyword);
+        console.log(`正在生成配图: ${options.imageKeyword}`);
+        const urls = await generateImage({ prompt: options.imageKeyword });
+        console.log(`生成了 ${urls.length} 张图片`);
+
+        const paths = await downloadImages(urls);
+
+        // Paste first image into editor body
+        if (paths.length > 0) {
+          await pasteImage(session.page, paths[0]);
+        }
+
+        // Use first image as cover if no separate cover keyword
+        if (!options.coverKeyword && paths.length > 0) {
+          console.log("使用配图作为封面");
+          await setCoverFile(session.page, paths[0]);
+        }
       }
 
       // Step 6: Cover
       if (options.images && options.coverKeyword) {
-        await setCover(session.page, options.coverKeyword);
+        console.log(`正在生成封面图: ${options.coverKeyword}`);
+        const coverUrls = await generateImage({ prompt: options.coverKeyword });
+        const coverPaths = await downloadImages(coverUrls);
+        if (coverPaths.length > 0) {
+          await setCoverFile(session.page, coverPaths[0]);
+        }
+      } else if (!options.images || !options.imageKeyword) {
+        // No images at all, select no cover
+        const noCoverLabel = session.page.locator("label", { hasText: "无封面" }).first();
+        await noCoverLabel.click();
+        console.log("已选择无封面");
       }
 
       // Step 7: Declarations
