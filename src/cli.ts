@@ -19,13 +19,13 @@ program
   .option("--no-declarations", "跳过声明设置")
   .action(async (options) => {
     const session = await createSession();
-
+    let exitCode = 1;
     try {
       // Step 1: Login check
       const loggedIn = await ensureLogin(session.page);
       if (!loggedIn) {
         console.error("登录失败，退出");
-        process.exit(1);
+        return;
       }
 
       // Step 2: Open publish page
@@ -61,17 +61,20 @@ program
       const success = await publishArticle(session.page);
       if (success) {
         console.log("=== 发布完成 ===");
-        process.exit(0);
+        exitCode = 0;
       } else {
         console.error("=== 发布失败 ===");
-        process.exit(1);
       }
     } catch (err) {
       console.error("发布过程出错:", err);
-      process.exit(1);
     } finally {
-      await closeSession(session);
+      try {
+        await closeSession(session);
+      } catch (err) {
+        console.error("关闭浏览器会话失败:", err);
+      }
     }
+    process.exit(exitCode);
   });
 
 program.parse();
