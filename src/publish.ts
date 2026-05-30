@@ -33,45 +33,21 @@ export async function setDeclarations(page: Page): Promise<void> {
 export async function clickPublish(page: Page): Promise<void> {
   console.log("点击发布...");
 
-  // Click "预览并发布"
-  const foundPreview = await page.evaluate((btnText) => {
-    const buttons = Array.from(document.querySelectorAll<HTMLElement>("button, a, span, div"));
-    const btn = buttons.find(
-      (b) => b.textContent?.includes(btnText) && b.offsetParent !== null
-    );
-    if (btn) {
-      btn.scrollIntoView();
-      btn.click();
-      return true;
-    }
-    return false;
-  }, SELECTORS.PUBLISH_BTN);
-  if (!foundPreview) {
-    throw new Error("未找到「预览并发布」按钮");
-  }
+  // Click "预览并发布" using Playwright locator
+  const previewBtn = page.locator("button", { hasText: "预览并发布" }).first();
+  await previewBtn.waitFor({ state: "visible", timeout: CONFIG.DEFAULT_TIMEOUT });
+  await previewBtn.scrollIntoViewIfNeeded();
+  await previewBtn.click();
+  console.log("已点击预览并发布");
 
   // Wait for preview to load
   await page.waitForTimeout(3000);
 
   // Click "确认发布"
-  const foundConfirm = await page.evaluate((btnText) => {
-    const buttons = Array.from(
-      document.querySelectorAll<HTMLElement>("button, a, span, div")
-    );
-    const btn = buttons.find(
-      (b) =>
-        (b.textContent?.includes(btnText) || b.textContent?.includes("立即发布")) &&
-        b.offsetParent !== null
-    );
-    if (btn) {
-      btn.click();
-      return true;
-    }
-    return false;
-  }, SELECTORS.CONFIRM_BTN);
-  if (!foundConfirm) {
-    throw new Error("未找到「确认发布」按钮");
-  }
+  const confirmBtn = page.locator("button", { hasText: /确认发布|立即发布/ }).first();
+  await confirmBtn.waitFor({ state: "visible", timeout: CONFIG.DEFAULT_TIMEOUT });
+  await confirmBtn.scrollIntoViewIfNeeded();
+  await confirmBtn.click();
 
   console.log("已确认发布");
 }

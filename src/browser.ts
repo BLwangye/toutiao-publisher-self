@@ -1,15 +1,6 @@
 import { chromium, Browser, BrowserContext, Page } from "playwright";
-import * as path from "path";
-import * as os from "os";
 
-const USER_DATA_DIR = path.join(
-  os.homedir(),
-  "AppData",
-  "Local",
-  "Google",
-  "Chrome",
-  "User Data"
-);
+const CDP_URL = "http://localhost:9222";
 
 interface BrowserSession {
   browser: Browser;
@@ -18,15 +9,9 @@ interface BrowserSession {
 }
 
 export async function createSession(): Promise<BrowserSession> {
-  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-    headless: false,
-    channel: "chrome",
-    args: ["--disable-blink-features=AutomationControlled"],
-  });
-
-  let page = context.pages()[0] ?? (await context.newPage());
-
-  const browser = context.browser()!;
+  const browser = await chromium.connectOverCDP(CDP_URL);
+  const context = browser.contexts()[0];
+  const page = context.pages()[0] ?? (await context.newPage());
 
   return { browser, context, page };
 }

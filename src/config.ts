@@ -8,7 +8,7 @@ export const CONFIG = {
 } as const;
 
 export const SELECTORS = {
-  TITLE_INPUT: 'input[placeholder*="标题"]',
+  TITLE_INPUT: 'textarea[placeholder*="请输入文章标题"]',
   EDITOR: ".ProseMirror",
   PUBLISH_BTN: "预览并发布",
   CONFIRM_BTN: "确认发布",

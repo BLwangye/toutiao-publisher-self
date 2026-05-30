@@ -1,6 +1,7 @@
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import * as child_process from "child_process";
 import { pipeline } from "stream/promises";
 
 const API_HOST = "visual.volcengineapi.com";
@@ -10,9 +11,25 @@ const ACTION = "CVProcess";
 const VERSION = "2022-08-31";
 const IMAGE_DIR = path.join(process.cwd(), "images");
 
+function getEnv(key: string): string | undefined {
+  const val = process.env[key];
+  if (val) return val;
+  if (process.platform === "win32") {
+    try {
+      return child_process.execSync(
+        `powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('${key}','User')"`,
+        { encoding: "utf-8" }
+      ).trim();
+    } catch {
+      // Fallback: env var not set
+    }
+  }
+  return undefined;
+}
+
 function sign(method: string, query: Record<string, string>, body: string): Record<string, string> {
-  const ak = process.env.VOLC_ACCESS_KEY;
-  const sk = process.env.VOLC_SECRET_KEY;
+  const ak = getEnv("VOLC_ACCESS_KEY");
+  const sk = getEnv("VOLC_SECRET_KEY");
   if (!ak || !sk) throw new Error("Missing VOLC_ACCESS_KEY or VOLC_SECRET_KEY env vars");
 
   const now = new Date();
@@ -72,15 +89,16 @@ export interface GenerateOptions {
 export async function generateImage(options: GenerateOptions): Promise<string[]> {
   const { prompt, width = 1024, height = 1024 } = options;
 
-  const body = JSON.stringify({
+  const reqBody: Record<string, any> = {
     req_key: "jimeng_t2i_v40",
     prompt,
     width,
     height,
-    use_sr: false,
     return_url: true,
-    logo_info: { add_logo: true, position: 0, language: 0, opacity: 1 },
-  });
+    logo_info: { add_logo: false },
+  };
+
+  const body = JSON.stringify(reqBody);
 
   const query: Record<string, string> = {};
   const headers = sign("POST", query, body);
