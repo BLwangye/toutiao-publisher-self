@@ -73,3 +73,62 @@ export async function pasteImage(page: Page, imagePath: string): Promise<void> {
   });
   console.log(`图片已粘贴到正文 (共 ${imgCount} 张)`);
 }
+
+function imageToDataUri(imagePath: string): string {
+  const buffer = fs.readFileSync(imagePath);
+  const base64 = buffer.toString("base64");
+  const ext = imagePath.split(".").pop()?.toLowerCase() ?? "png";
+  const mimeMap: Record<string, string> = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+  };
+  const mime = mimeMap[ext] ?? "image/png";
+  return `data:${mime};base64,${base64}`;
+}
+
+export async function pasteImagesAtH2s(page: Page, imagePaths: string[]): Promise<void> {
+  const uris = imagePaths.map(imageToDataUri);
+
+  await page.evaluate((dataUris) => {
+    const editor = document.querySelector(".ProseMirror");
+    if (!editor) throw new Error("Editor not found");
+
+    const h2s = editor.querySelectorAll("h2");
+    const count = Math.min(h2s.length, dataUris.length);
+
+    for (let i = 0; i < count; i++) {
+      const h2 = h2s[i];
+      const imgSrc = dataUris[i];
+
+      const imgWrapper = document.createElement("div");
+      imgWrapper.innerHTML = `<img src="${imgSrc}" />`;
+      const img = imgWrapper.firstElementChild!;
+
+      h2.after(img);
+
+      const dt = new DataTransfer();
+      dt.setData("text/html", imgWrapper.innerHTML);
+      const event = new ClipboardEvent("paste", {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      });
+      editor.dispatchEvent(event);
+    }
+  }, uris);
+
+  await page.evaluate(() => {
+    const editor = document.querySelector(".ProseMirror");
+    editor?.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+    editor?.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    editor?.dispatchEvent(new Event("blur", { bubbles: true }));
+    editor?.dispatchEvent(new Event("focus", { bubbles: true }));
+  });
+
+  const imgCount = await page.evaluate(() => {
+    return document.querySelector(".ProseMirror")?.querySelectorAll("img").length ?? 0;
+  });
+  console.log(`${imagePaths.length} 张图片已插入正文 (共 ${imgCount} 张)`);
+}

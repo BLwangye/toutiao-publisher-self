@@ -4,18 +4,46 @@ import { CONFIG } from "./config.js";
 export async function setCoverFile(page: Page, imagePath: string): Promise<void> {
   console.log("上传封面文件: " + imagePath);
 
-  // Step 1: Select "单图" radio button
-  const singleLabel = page.locator("label", { hasText: "单图" }).first();
-  await singleLabel.click({ force: true });
+  // Scroll to top of page first
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(1000);
 
-  // Step 2: Click "编辑替换" to open the image drawer
-  const editBtn = page.locator("text=编辑替换").first();
-  await editBtn.click({ force: true });
-  await page.waitForTimeout(2000);
+  // Step 1: Select "单图" radio button
+  const singleLabel = page.locator("label", { hasText: "单图" }).first();
+  await singleLabel.scrollIntoViewIfNeeded();
+  await singleLabel.click({ force: true });
+  await page.waitForTimeout(1500);
 
-  // Step 3: Click "上传图片" tab
-  await page.locator(".byte-tabs-header-title", { hasText: "上传图片" }).click();
+  // Step 2: Click "编辑替换" via page.evaluate to avoid viewport issues
+  await page.evaluate(() => {
+    const imagesDiv = document.querySelector<HTMLElement>(".article-cover-images");
+    if (imagesDiv) {
+      imagesDiv.scrollIntoView({ block: "center" });
+      imagesDiv.click();
+    }
+  });
+  await page.waitForTimeout(3000);
+
+  // Step 3: Find and click the upload tab in the cover drawer
+  await page.waitForSelector(".byte-drawer .byte-tabs-header-title", { timeout: 10000 });
+  await page.waitForTimeout(500);
+
+  const drawerTabs = await page.locator(".byte-drawer .byte-tabs-header-title").all();
+  console.log(`找到 ${drawerTabs.length} 个 tab`);
+  let tabClicked = false;
+  for (const tab of drawerTabs) {
+    const text = (await tab.innerText().catch(() => "")).trim();
+    console.log(`  tab: "${text}"`);
+    if (text === "上传图片" || text === "正文图片") {
+      await tab.click();
+      tabClicked = true;
+      console.log(`已点击: ${text}`);
+      break;
+    }
+  }
+  if (!tabClicked) {
+    throw new Error("未找到上传标签");
+  }
   await page.waitForTimeout(1000);
 
   // Step 4: Click "本地上传" and handle file chooser
