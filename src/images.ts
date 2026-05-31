@@ -14,14 +14,15 @@ export async function setCoverFile(page: Page, imagePath: string): Promise<void>
   await singleLabel.click({ force: true });
   await page.waitForTimeout(1500);
 
-  // Step 2: Click "编辑替换" via page.evaluate to avoid viewport issues
-  await page.evaluate(() => {
-    const imagesDiv = document.querySelector<HTMLElement>(".article-cover-images");
-    if (imagesDiv) {
-      imagesDiv.scrollIntoView({ block: "center" });
-      imagesDiv.click();
-    }
-  });
+  // Step 2: Hover over cover area to reveal add button, then click it
+  const coverArea = page.locator(".article-cover-images");
+  await coverArea.scrollIntoViewIfNeeded();
+  await coverArea.hover();
+  await page.waitForTimeout(1000);
+
+  const addBtn = page.locator(".article-cover-add").first();
+  await addBtn.waitFor({ state: "visible", timeout: 10000 });
+  await addBtn.click({ force: true });
   await page.waitForTimeout(3000);
 
   // Step 3: Find and click the upload tab in the cover drawer
