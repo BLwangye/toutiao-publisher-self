@@ -16,6 +16,7 @@ program
   .requiredOption("--title <title>", "文章标题")
   .requiredOption("--content <html>", "文章正文 (HTML 格式)")
   .option("--image-keyword <keyword>", "AI 配图关键词，逗号分隔多张")
+  .option("--image-category <category>", "图片分类：科技/财经/社会/生活/出行/娱乐/体育")
   .option("--cover-keyword <keyword>", "封面图关键词")
   .option("--no-images", "跳过图片步骤")
   .option("--reuse-images", "复用images/中已有图片，不重新生成")
@@ -75,7 +76,7 @@ program
           for (const kw of keywords) {
             const urls = await generateImage({ prompt: kw });
             console.log(`  关键词"${kw}"生成了 ${urls.length} 张`);
-            const paths = await downloadImages(urls, kw);
+            const paths = await downloadImages(urls, kw, options.imageCategory);
             imagePaths.push(...paths);
           }
           console.log(`${imagePaths.length} 张图片已就绪`);
