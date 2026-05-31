@@ -124,13 +124,18 @@ export async function generateImage(options: GenerateOptions): Promise<string[]>
   return imageUrls;
 }
 
-export async function downloadImages(urls: string[]): Promise<string[]> {
-  if (!fs.existsSync(IMAGE_DIR)) fs.mkdirSync(IMAGE_DIR, { recursive: true });
+export async function downloadImages(urls: string[], keyword?: string): Promise<string[]> {
+  // Organize by keyword folder: images/{keyword}/{date}_{index}.png
+  const folder = keyword
+    ? path.join(IMAGE_DIR, keyword.replace(/[\/\\:*?"<>|]/g, "_").replace(/\s+/g, "_").substring(0, 30))
+    : IMAGE_DIR;
+  if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
 
+  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const paths: string[] = [];
   for (let i = 0; i < urls.length; i++) {
     const ext = ".png";
-    const filePath = path.join(IMAGE_DIR, `img_${Date.now()}_${i}${ext}`);
+    const filePath = path.join(folder, `${dateStr}_${i + 1}_${Date.now()}${ext}`);
     const resp = await fetch(urls[i]);
     if (!resp.ok || !resp.body) throw new Error(`Download failed: ${resp.status}`);
     await pipeline(resp.body as any, fs.createWriteStream(filePath));

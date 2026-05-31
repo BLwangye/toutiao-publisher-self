@@ -15,9 +15,11 @@ program
   .description("今日头条文章自动发布工具")
   .requiredOption("--title <title>", "文章标题")
   .requiredOption("--content <html>", "文章正文 (HTML 格式)")
-  .option("--image-keyword <keyword>", "AI 配图关键词")
+  .option("--image-keyword <keyword>", "AI 配图关键词，逗号分隔多张")
   .option("--cover-keyword <keyword>", "封面图关键词")
   .option("--no-images", "跳过图片步骤")
+  .option("--reuse-images", "复用images/中已有图片，不重新生成")
+  .option("--image-count <number>", "复用图片数量", "3")
   .option("--no-declarations", "跳过声明设置")
   .action(async (options) => {
     const session = await createSession();
@@ -45,19 +47,41 @@ program
       let imagePaths: string[] = [];
       let coverPath = "";
 
-      if (options.images && options.imageKeyword) {
-        const keywords = options.imageKeyword.split(",").map((k: string) => k.trim()).filter(Boolean);
-        console.log(`正在生成 ${keywords.length} 张配图: ${keywords.join(" | ")}`);
+      if (options.images && (options.imageKeyword || options.reuseImages)) {
+        if (options.reuseImages) {
+          const imageDir = "images";
+          const count = parseInt(options.imageCount || "3");
+          // Collect images from all subdirectories, sort by time
+          const allFiles: string[] = [];
+          const dirs = [imageDir, ...fs.readdirSync(imageDir).filter(d => fs.statSync(`images/${d}`).isDirectory()).map(d => `images/${d}`)];
+          for (const dir of dirs) {
+            try {
+              for (const f of fs.readdirSync(dir)) {
+                if (f.endsWith(".png") || f.endsWith(".jpg")) {
+                  allFiles.push(`${dir}/${f}`);
+                }
+              }
+            } catch { /* skip inaccessible dirs */ }
+          }
+          imagePaths = allFiles
+            .sort()
+            .reverse()
+            .slice(0, count);
+          console.log(`复用 ${imagePaths.length} 张已有图片`);
+        } else {
+          const keywords = options.imageKeyword.split(",").map((k: string) => k.trim()).filter(Boolean);
+          console.log(`正在生成 ${keywords.length} 张配图: ${keywords.join(" | ")}`);
 
-        for (const kw of keywords) {
-          const urls = await generateImage({ prompt: kw });
-          console.log(`  关键词"${kw}"生成了 ${urls.length} 张`);
-          const paths = await downloadImages(urls);
-          imagePaths.push(...paths);
+          for (const kw of keywords) {
+            const urls = await generateImage({ prompt: kw });
+            console.log(`  关键词"${kw}"生成了 ${urls.length} 张`);
+            const paths = await downloadImages(urls, kw);
+            imagePaths.push(...paths);
+          }
+          console.log(`${imagePaths.length} 张图片已就绪`);
         }
 
         if (imagePaths.length > 0) coverPath = imagePaths[0];
-        console.log(`${imagePaths.length} 张图片已就绪`);
       }
 
       // Step 4: Set cover BEFORE content (use no-cover if cover upload isn't needed)
@@ -76,10 +100,10 @@ program
         console.log("已选择无封面");
       }
 
-      // Step 5: Insert content
+      // Step 5: Insert content (text only)
       await insertContent(session.page, options.content);
 
-      // Step 6: Paste images between h1 sections
+      // Step 6: Paste images after each h1
       if (imagePaths.length > 0) {
         console.log("正在插入配图...");
         const uris = imagePaths.map(p => {
@@ -89,28 +113,20 @@ program
           return `data:${mime};base64,${buf.toString("base64")}`;
         });
 
-        const h2Count = await session.page.evaluate(() => document.querySelectorAll(".ProseMirror h1").length);
-        const pasteCount = Math.min(h2Count, uris.length);
+        const hCount = await session.page.evaluate(() => document.querySelectorAll(".ProseMirror h1").length);
+        const pasteCount = Math.min(hCount, uris.length);
 
         for (let i = 0; i < pasteCount; i++) {
-          // Use Selection API to place cursor after the h1, then paste
-          await session.page.evaluate(({ index, uri }: { index: number; uri: string }) => {
+          // Triple-click the h1 to select it, then right arrow to go to end
+          const h1 = session.page.locator(`.ProseMirror h1 >> nth=${i}`);
+          await h1.click({ clickCount: 3 });  // select all text in h1
+          await session.page.keyboard.press("ArrowRight");  // move cursor to end
+          await session.page.keyboard.press("Enter");      // new line after h1
+          await session.page.waitForTimeout(200);
+
+          await session.page.evaluate((uri) => {
             const editor = document.querySelector(".ProseMirror");
             if (!editor) return;
-
-            const h1s = editor.querySelectorAll("h1");
-            if (index >= h1s.length) return;
-
-            const h1 = h1s[index];
-            const range = document.createRange();
-            range.setStartAfter(h1);
-            range.collapse(true);
-
-            const sel = window.getSelection();
-            sel?.removeAllRanges();
-            sel?.addRange(range);
-
-            // Paste image
             const dt = new DataTransfer();
             dt.setData("text/html", `<img src="${uri}" style="max-width:100%"/>`);
             editor.dispatchEvent(new ClipboardEvent("paste", {
@@ -118,12 +134,13 @@ program
               bubbles: true,
               cancelable: true,
             }));
-
-            // Trigger content update
-            editor.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
-          }, { index: i, uri: uris[i] });
-          await session.page.waitForTimeout(500);
+          }, uris[i]);
+          await session.page.waitForTimeout(300);
         }
+
+        await session.page.evaluate(() => {
+          document.querySelector(".ProseMirror")?.dispatchEvent(new Event("input", { bubbles: true }));
+        });
 
         console.log(`${pasteCount} 张图片已插入正文`);
       } else if (!options.images) {
