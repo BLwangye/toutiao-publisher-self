@@ -5,6 +5,7 @@ import { ensureLogin } from "./login.js";
 import { typeTitle, insertContent } from "./editor.js";
 import { setCoverFile } from "./images.js";
 import { generateImage, downloadImages } from "./jimeng.js";
+import { interactArticles } from "./interact.js";
 import { setDeclarations, publishArticle } from "./publish.js";
 import { CONFIG } from "./config.js";
 
@@ -13,8 +14,8 @@ const program = new Command();
 program
   .name("toutiao-publisher")
   .description("今日头条文章自动发布工具")
-  .requiredOption("--title <title>", "文章标题")
-  .requiredOption("--content <html>", "文章正文 (HTML 格式)")
+  .option("--title <title>", "文章标题")
+  .option("--content <html>", "文章正文 (HTML 格式)")
   .option("--image-keyword <keyword>", "AI 配图关键词，逗号分隔多张")
   .option("--image-category <category>", "图片分类：科技/财经/社会/生活/出行/娱乐/体育")
   .option("--cover-keyword <keyword>", "封面图关键词")
@@ -22,6 +23,8 @@ program
   .option("--reuse-images", "复用images/中已有图片，不重新生成")
   .option("--image-files <paths>", "指定图片文件，逗号分隔，第一张为封面")
   .option("--image-count <number>", "复用图片数量", "3")
+  .option("--interact", "执行互动模式（关注+点赞+评论）")
+  .option("--interact-count <number>", "互动文章数量", "5")
   .option("--no-declarations", "跳过声明设置")
   .action(async (options) => {
     const session = await createSession();
@@ -31,6 +34,20 @@ program
       const loggedIn = await ensureLogin(session.page);
       if (!loggedIn) {
         console.error("登录失败，退出");
+        return;
+      }
+
+      // ---- Interact mode ----
+      if (options.interact) {
+        const count = parseInt(options.interactCount);
+        await interactArticles(session.page, count);
+        exitCode = 0;
+        return;
+      }
+
+      // ---- Publish mode ----
+      if (!options.title || !options.content) {
+        console.error("请指定 --title 和 --content");
         return;
       }
 
