@@ -93,14 +93,24 @@ program
         const pasteCount = Math.min(h2Count, uris.length);
 
         for (let i = 0; i < pasteCount; i++) {
-          await session.page.locator(`.ProseMirror h1 >> nth=${i}`).click();
-          await session.page.keyboard.press("End");
-          await session.page.keyboard.press("Enter");
-          await session.page.waitForTimeout(300);
-
-          await session.page.evaluate((uri) => {
+          // Use Selection API to place cursor after the h1, then paste
+          await session.page.evaluate(({ index, uri }: { index: number; uri: string }) => {
             const editor = document.querySelector(".ProseMirror");
             if (!editor) return;
+
+            const h1s = editor.querySelectorAll("h1");
+            if (index >= h1s.length) return;
+
+            const h1 = h1s[index];
+            const range = document.createRange();
+            range.setStartAfter(h1);
+            range.collapse(true);
+
+            const sel = window.getSelection();
+            sel?.removeAllRanges();
+            sel?.addRange(range);
+
+            // Paste image
             const dt = new DataTransfer();
             dt.setData("text/html", `<img src="${uri}" style="max-width:100%"/>`);
             editor.dispatchEvent(new ClipboardEvent("paste", {
@@ -108,7 +118,10 @@ program
               bubbles: true,
               cancelable: true,
             }));
-          }, uris[i]);
+
+            // Trigger content update
+            editor.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+          }, { index: i, uri: uris[i] });
           await session.page.waitForTimeout(500);
         }
 
