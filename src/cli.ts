@@ -20,6 +20,7 @@ program
   .option("--cover-keyword <keyword>", "封面图关键词")
   .option("--no-images", "跳过图片步骤")
   .option("--reuse-images", "复用images/中已有图片，不重新生成")
+  .option("--image-files <paths>", "指定图片文件，逗号分隔，第一张为封面")
   .option("--image-count <number>", "复用图片数量", "3")
   .option("--no-declarations", "跳过声明设置")
   .action(async (options) => {
@@ -48,8 +49,11 @@ program
       let imagePaths: string[] = [];
       let coverPath = "";
 
-      if (options.images && (options.imageKeyword || options.reuseImages)) {
-        if (options.reuseImages) {
+      if (options.images && (options.imageKeyword || options.reuseImages || options.imageFiles)) {
+        if (options.imageFiles) {
+          imagePaths = options.imageFiles.split(",").map((f: string) => f.trim()).filter(Boolean);
+          console.log(`使用指定图片: ${imagePaths.length} 张`);
+        } else if (options.reuseImages) {
           const imageDir = "images";
           const count = parseInt(options.imageCount || "3");
           // Collect images from all subdirectories, sort by time
