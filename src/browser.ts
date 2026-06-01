@@ -43,7 +43,8 @@ export async function createSession(): Promise<BrowserSession> {
   for (let i = 0; i < 10; i++) {
     try {
       const browser = await chromium.connectOverCDP(url, { timeout: 3000 });
-      const context = browser.contexts()[0];
+      // Use first context with any pages, fall back to context[0]
+      const context = browser.contexts().find(c => c.pages().length > 0) ?? browser.contexts()[0];
       const page = context.pages()[0] ?? (await context.newPage());
       console.log("已连接 Chrome");
       return { browser, context, page };
@@ -55,5 +56,10 @@ export async function createSession(): Promise<BrowserSession> {
 }
 
 export async function closeSession(session: BrowserSession): Promise<void> {
-  await session.context.close();
+  // Only close the page, keep context alive so extensions and login persist
+  try {
+    await session.page.close();
+  } catch {
+    // page might already be closed
+  }
 }
