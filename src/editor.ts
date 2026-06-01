@@ -132,3 +132,79 @@ export async function pasteImagesAtH2s(page: Page, imagePaths: string[]): Promis
   });
   console.log(`${imagePaths.length} 张图片已插入正文 (共 ${imgCount} 张)`);
 }
+
+export async function insertTopics(page: Page, topics: string[]): Promise<number> {
+  if (topics.length === 0) return 0;
+
+  const editor = page.locator(SELECTORS.EDITOR);
+
+  // Focus editor and ensure ProseMirror is in input mode
+  await editor.click();
+  await page.waitForTimeout(500);
+
+  // Move cursor to very end of content
+  await page.evaluate(() => {
+    const pm = document.querySelector(".ProseMirror");
+    if (!pm) return;
+    const sel = window.getSelection();
+    if (!sel) return;
+    const range = document.createRange();
+    range.selectNodeContents(pm);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+  await page.waitForTimeout(300);
+
+  let inserted = 0;
+  for (let i = 0; i < topics.length; i++) {
+    const topic = topics[i];
+
+    // New paragraph before first topic
+    if (i === 0) {
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(500);
+    }
+
+    // Type # to trigger topic autocomplete, then the topic name
+    await page.keyboard.press("#");
+    await page.waitForTimeout(300);
+    await page.keyboard.type(topic, { delay: 50 });
+    await page.waitForTimeout(2000);
+
+    // Look for the mention selector popup
+    const popup = page.locator(".mention-selector-modal").first();
+    try {
+      await popup.waitFor({ state: "visible", timeout: 3000 });
+
+      // Click the first matching topic item
+      const firstItem = popup.locator(".forum-list-item").first();
+      await firstItem.waitFor({ state: "visible", timeout: 2000 });
+      await firstItem.click();
+      await page.waitForTimeout(800);
+      inserted++;
+      console.log(`  话题已选中: #${topic}`);
+    } catch {
+      // If popup didn't appear, try pressing Enter as fallback
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(300);
+      console.log(`  话题弹窗未出现, 保留文本: #${topic}`);
+    }
+
+    // Space to separate topics
+    if (i < topics.length - 1) {
+      await page.keyboard.press("Space");
+      await page.waitForTimeout(300);
+    }
+  }
+
+  // Dispatch input event
+  await editor.evaluate((el) => {
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await page.waitForTimeout(300);
+
+  console.log(`话题插入完成: ${inserted}/${topics.length} 个选中`);
+  return inserted;
+}

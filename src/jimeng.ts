@@ -124,25 +124,10 @@ export async function generateImage(options: GenerateOptions): Promise<string[]>
   return imageUrls;
 }
 
-const CATEGORY_MAP: Record<string, string> = {
-  "科技": "科技", "AI": "科技", "人工智能": "科技", "芯片": "科技", "互联网": "科技",
-  "财经": "财经", "经济": "财经", "股市": "财经", "理财": "财经", "房贷": "财经", "养路费": "财经",
-  "社会": "社会", "民生": "社会", "政策": "社会", "教育": "社会", "医疗": "社会",
-  "生活": "生活", "美食": "生活", "旅游": "生活", "旅行": "生活", "风景": "生活",
-  "出行": "出行", "汽车": "出行", "电车": "出行", "特斯拉": "出行", "蔚来": "出行", "高速": "出行",
-  "娱乐": "娱乐", "明星": "娱乐", "影视": "娱乐",
-  "体育": "体育", "篮球": "体育", "足球": "体育", "马刺": "体育",
-};
-
-function detectCategory(keyword: string): string {
-  for (const [key, cat] of Object.entries(CATEGORY_MAP)) {
-    if (keyword.includes(key)) return cat;
-  }
-  return "其他";
-}
+import { detectCategory as detectCategoryFromKeywords } from "./category.js";
 
 export async function downloadImages(urls: string[], keyword?: string, category?: string): Promise<string[]> {
-  const cat = category || (keyword ? detectCategory(keyword) : "其他");
+  const cat = category || (keyword ? (detectCategoryFromKeywords(keyword) ?? "其他") : "其他");
   const folder = path.join(IMAGE_DIR, cat);
   if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
 

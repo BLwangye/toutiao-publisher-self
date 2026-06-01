@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.tsbuildinfo
 commented.json
+tmp_*.png
+tmp_*.ts

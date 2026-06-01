@@ -2,11 +2,14 @@ import { Command } from "commander";
 import * as fs from "fs";
 import { createSession, closeSession } from "./browser.js";
 import { ensureLogin } from "./login.js";
-import { typeTitle, insertContent } from "./editor.js";
+import { typeTitle, insertContent, insertTopics } from "./editor.js";
 import { setCoverFile } from "./images.js";
 import { generateImage, downloadImages } from "./jimeng.js";
 import { interactArticles } from "./interact.js";
 import { setDeclarations, publishArticle } from "./publish.js";
+import { detectCategory, formatTitle } from "./category.js";
+import { extractTopics, formatTopics } from "./topics.js";
+import { rewritePipeline, formatContentLists } from "./rewrite.js";
 import { CONFIG } from "./config.js";
 
 const program = new Command();
@@ -26,6 +29,9 @@ program
   .option("--interact", "执行互动模式（点赞+评论）")
   .option("--interact-count <number>", "互动文章数量", "5")
   .option("--no-declarations", "跳过声明设置")
+  .option("--no-topics", "跳过话题标签")
+  .option("--category <name>", "模块归属 (自动检测或手动指定)")
+  .option("--from-url <url>", "从指定 URL 抓取原文并改写后发布")
   .action(async (options) => {
     const session = await createSession();
     let exitCode = 1;
@@ -45,9 +51,26 @@ program
         return;
       }
 
+      // ---- Rewrite mode (from-url) ----
+      if (options.fromUrl) {
+        console.log(`\n=== 抓取原文并改写 ===`);
+        console.log(`URL: ${options.fromUrl}`);
+
+        const result = await rewritePipeline(
+          session.page,
+          options.fromUrl,
+          options.category as import("./category.js").Category ?? null
+        );
+        options.title = result.title;
+        options.content = result.finalContent;
+        console.log(`标题: ${result.title}`);
+        console.log(`使用 LLM: ${result.usedLLM ? "是" : "否"}`);
+        console.log(`=== 改写完成 ===\n`);
+      }
+
       // ---- Publish mode ----
       if (!options.title || !options.content) {
-        console.error("请指定 --title 和 --content");
+        console.error("请指定 --title 和 --content，或使用 --from-url");
         return;
       }
 
@@ -59,8 +82,15 @@ program
       });
       await session.page.waitForTimeout(5000);
 
-      // Step 3: Type title
-      await typeTitle(session.page, options.title);
+      // Step 3: Detect category and format title
+      const category = options.category
+        ? (options.category as import("./category.js").Category)
+        : detectCategory(options.title, options.content);
+      const displayTitle = formatTitle(options.title, category ?? null);
+      console.log(`模块归属: ${category ?? "无"}, 显示标题: ${displayTitle}`);
+
+      // Step 4: Type title
+      await typeTitle(session.page, displayTitle);
 
       // Generate images before inserting content
       let imagePaths: string[] = [];
@@ -114,18 +144,36 @@ program
         } catch (err) {
           console.log("封面自动设置失败，使用无封面:", (err as Error).message);
           const noCoverLabel = session.page.locator("label", { hasText: "无封面" }).first();
-          await noCoverLabel.click();
+          await noCoverLabel.click({ force: true });
         }
       } else if (!options.images) {
         const noCoverLabel = session.page.locator("label", { hasText: "无封面" }).first();
-        await noCoverLabel.click();
+        await noCoverLabel.click({ force: true });
         console.log("已选择无封面");
       }
 
-      // Step 5: Insert content (text only)
-      await insertContent(session.page, options.content);
+      // Step 5: Extract topics (will insert after content via editor)
+      let contentHtml = options.content;
+      let topicLabels: string[] = [];
+      if (options.topics) {
+        topicLabels = extractTopics(options.content, category ?? null);
+        if (topicLabels.length > 0) {
+          console.log(`话题标签: ${formatTopics(topicLabels)}`);
+        } else {
+          console.log("未检测到话题关键词");
+        }
+      }
 
-      // Step 6: Paste images after each h1
+      // Step 6: Format lists then insert content
+      contentHtml = formatContentLists(contentHtml);
+      await insertContent(session.page, contentHtml);
+
+      // Step 6b: Insert topics via keyboard (triggers ProseMirror topic autocomplete)
+      if (topicLabels.length > 0) {
+        await insertTopics(session.page, topicLabels);
+      }
+
+      // Step 7: Paste images after each h1
       if (imagePaths.length > 0) {
         console.log("正在插入配图...");
         const uris = imagePaths.map(p => {
@@ -167,7 +215,7 @@ program
         console.log(`${pasteCount} 张图片已插入正文`);
       } else if (!options.images) {
         const noCoverLabel = session.page.locator("label", { hasText: "无封面" }).first();
-        await noCoverLabel.click();
+        await noCoverLabel.click({ force: true });
         console.log("已选择无封面");
       }
 
@@ -176,7 +224,7 @@ program
         await setDeclarations(session.page);
       }
 
-      // Step 8: Publish
+      // Step 9: Publish
       const success = await publishArticle(session.page);
       if (success) {
         console.log("=== 发布完成 ===");
