@@ -1,6 +1,5 @@
 import { chromium, Browser, BrowserContext, Page } from "playwright";
 import { CONFIG } from "./config.js";
-import { exec } from "child_process";
 
 interface BrowserSession {
   browser: Browser;
@@ -11,39 +10,27 @@ interface BrowserSession {
 export async function createSession(): Promise<BrowserSession> {
   const url = `http://127.0.0.1:${CONFIG.CDP_PORT}`;
 
-  // Check if Chrome is already running on CDP port
-  let alive = false;
+  // Check if Chrome CDP is already accessible
+  let cdpAlive = false;
   try {
     const r = await fetch(`${url}/json/version`, { signal: AbortSignal.timeout(2000) });
-    alive = r.ok;
+    cdpAlive = r.ok;
   } catch {}
 
-  if (!alive) {
+  if (!cdpAlive) {
     const chrome = CONFIG.CHROME_PATH;
-    const dataDir = CONFIG.CHROME_DATA_DIR;
-    console.log(`启动 Chrome...`);
-
-    // Start Chrome detached, don't wait
-    const cmd = `"${chrome}" --remote-debugging-port=${CONFIG.CDP_PORT} --user-data-dir="${dataDir}"`;
-    exec(cmd, (err) => {
-      if (err) console.error("Chrome 启动失败:", err.message);
-    });
-
-    // Wait up to 15s for Chrome to become ready
-    for (let i = 0; i < 15; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-      try {
-        const r = await fetch(`${url}/json/version`, { signal: AbortSignal.timeout(1000) });
-        if (r.ok) break;
-      } catch {}
-    }
+    throw new Error(
+      "Chrome 调试端口未开启。请先用以下命令手动启动 Chrome:\n" +
+      `"${chrome}" --remote-debugging-port=${CONFIG.CDP_PORT} --user-data-dir="${CONFIG.CHROME_DATA_DIR}"`
+    );
   }
+
+  console.log("复用已有 Chrome");
 
   // Connect (up to 10s)
   for (let i = 0; i < 10; i++) {
     try {
       const browser = await chromium.connectOverCDP(url, { timeout: 3000 });
-      // Use first context with any pages, fall back to context[0]
       const context = browser.contexts().find(c => c.pages().length > 0) ?? browser.contexts()[0];
       const page = context.pages()[0] ?? (await context.newPage());
       console.log("已连接 Chrome");
@@ -56,7 +43,6 @@ export async function createSession(): Promise<BrowserSession> {
 }
 
 export async function closeSession(session: BrowserSession): Promise<void> {
-  // Only close the page, keep context alive so extensions and login persist
   try {
     await session.page.close();
   } catch {
