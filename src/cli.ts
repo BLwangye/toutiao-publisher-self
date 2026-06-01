@@ -32,6 +32,7 @@ program
   .option("--no-topics", "跳过话题标签")
   .option("--category <name>", "模块归属 (自动检测或手动指定)")
   .option("--from-url <url>", "从指定 URL 抓取原文并改写后发布")
+  .option("--preview", "仅填充内容不发布，供人工预览")
   .action(async (options) => {
     const session = await createSession();
     let exitCode = 1;
@@ -224,13 +225,18 @@ program
         await setDeclarations(session.page);
       }
 
-      // Step 9: Publish
-      const success = await publishArticle(session.page);
-      if (success) {
-        console.log("=== 发布完成 ===");
+      // Step 9: Publish (skip if preview mode)
+      if (options.preview) {
+        console.log("=== 预览模式：内容已填入，请在浏览器中审核后手动发布 ===");
         exitCode = 0;
       } else {
-        console.error("=== 发布失败 ===");
+        const success = await publishArticle(session.page);
+        if (success) {
+          console.log("=== 发布完成 ===");
+          exitCode = 0;
+        } else {
+          console.error("=== 发布失败 ===");
+        }
       }
     } catch (err) {
       console.error("发布过程出错:", err);

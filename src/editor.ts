@@ -20,18 +20,48 @@ export async function insertContent(
   const editor = page.locator(SELECTORS.EDITOR);
   await editor.waitFor({ state: "visible", timeout: CONFIG.DEFAULT_TIMEOUT });
   await editor.click();
+  await page.waitForTimeout(300);
 
-  await editor.evaluate((el, htmlContent) => {
-    el.innerHTML = htmlContent;
+  // Select all existing content and replace via clipboard paste
+  // This goes through ProseMirror's paste handler which preserves <strong>, emoji, etc.
+  await page.evaluate(() => {
+    const pm = document.querySelector(".ProseMirror");
+    if (!pm) return;
+    const sel = window.getSelection();
+    if (!sel) return;
+    const range = document.createRange();
+    range.selectNodeContents(pm);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+  await page.waitForTimeout(200);
 
-    el.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
-    el.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
-    el.dispatchEvent(new Event("selectionchange", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
+  // Paste the formatted HTML through clipboard
+  await page.evaluate((htmlContent) => {
+    const editor = document.querySelector(".ProseMirror");
+    if (!editor) return;
 
-    el.dispatchEvent(new Event("blur", { bubbles: true }));
-    el.dispatchEvent(new Event("focus", { bubbles: true }));
+    (editor as HTMLElement).focus();
+
+    const dt = new DataTransfer();
+    dt.setData("text/html", htmlContent);
+
+    const event = new ClipboardEvent("paste", {
+      clipboardData: dt,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    editor.dispatchEvent(event);
   }, html);
+
+  await page.waitForTimeout(500);
+
+  // Dispatch input event to register changes
+  await editor.evaluate((el) => {
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  });
 
   const length = await editor.evaluate((el) => el.textContent?.length ?? 0);
   console.log(`正文注入完成，共 ${length} 字`);
