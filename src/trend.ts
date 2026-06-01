@@ -4,6 +4,7 @@
 import * as child_process from "child_process";
 
 const API_URL = "https://trendapi.tgmeng.com/api/skill/search";
+const TOUTIAO_RSS_URL = "https://tgmeng.com/news/toutiao/rss.xml";
 
 export type QueryMode = "REALTIME" | "TODAY" | "HISTORY";
 
@@ -76,5 +77,37 @@ export async function searchHotItems(options: SearchOptions): Promise<HotItem[]>
   }
 
   const items: HotItem[] = data.data?.items ?? [];
+  return items;
+}
+
+// ── 头条热榜 RSS ──
+
+export async function fetchToutiaoItems(): Promise<HotItem[]> {
+  const seen = new Set<string>();
+  const items: HotItem[] = [];
+
+  // RSS feed: tgmeng.com/news/toutiao/rss.xml
+  try {
+    const resp = await fetch(TOUTIAO_RSS_URL, { signal: AbortSignal.timeout(15000) });
+    if (resp.ok) {
+      const xml = await resp.text();
+      const itemRegex = /<item>([\s\S]*?)<\/item>/g;
+      let match;
+      while ((match = itemRegex.exec(xml)) !== null) {
+        const block = match[1];
+        const titleMatch = block.match(/<title>[\s\S]*?<!\[CDATA\[(.*?)\]\]>[\s\S]*?<\/title>/);
+        const linkMatch = block.match(/<link>(.*?)<\/link>/);
+        if (!titleMatch || !linkMatch) continue;
+        let title = titleMatch[1].trim();
+        const url = linkMatch[1].trim();
+        if (url.includes("/trending/")) continue;
+        if (seen.has(url)) continue;
+        seen.add(url);
+        title = title.replace(/\s*-\s*来自【\s*头条\s*】\s*$/, "");
+        items.push({ title, url, source: "头条热榜", category: "", rootCategory: "", publishedAt: "", rank: items.length + 1 });
+      }
+    }
+  } catch {}
+
   return items;
 }

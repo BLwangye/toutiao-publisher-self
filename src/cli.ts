@@ -23,7 +23,7 @@ program
   .option("--reuse-images", "复用images/中已有图片，不重新生成")
   .option("--image-files <paths>", "指定图片文件，逗号分隔，第一张为封面")
   .option("--image-count <number>", "复用图片数量", "3")
-  .option("--interact", "执行互动模式（关注+点赞+评论）")
+  .option("--interact", "执行互动模式（点赞+评论）")
   .option("--interact-count <number>", "互动文章数量", "5")
   .option("--no-declarations", "跳过声明设置")
   .action(async (options) => {

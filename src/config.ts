@@ -5,6 +5,9 @@ export const CONFIG = {
   AI_LOAD_TIMEOUT: 50_000,
   PUBLISH_RETRY: 3,
   PUBLISH_RETRY_INTERVAL: 2_000,
+  CHROME_PATH: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  CDP_PORT: 9222,
+  CHROME_DATA_DIR: "C:\\Users\\baifa\\.config\\toutiao-chrome",
 } as const;
 
 export const SELECTORS = {
