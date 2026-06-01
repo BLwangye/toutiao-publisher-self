@@ -1,6 +1,70 @@
 import { Page } from "playwright";
 import { fetchToutiaoItems } from "./trend.js";
 import * as fs from "fs";
+import * as child_process from "child_process";
+
+// ── DeepSeek LLM comment generation ──
+
+function getEnv(key: string): string | undefined {
+  const val = process.env[key];
+  if (val) return val;
+  if (process.platform === "win32") {
+    try {
+      return child_process.execSync(
+        `powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('${key}','User')"`,
+        { encoding: "utf-8" }
+      ).trim();
+    } catch { /* not set */ }
+  }
+  return undefined;
+}
+
+const DEEPSEEK_API_KEY = getEnv("DEEPSEEK_API_KEY");
+
+async function generateCommentByLLM(title: string, content: string): Promise<string> {
+  if (!DEEPSEEK_API_KEY) {
+    // Fallback to template-based generation
+    return content.length > 50 
+      ? commentFromContent(title, content) 
+      : commentFromTitle(title);
+  }
+
+  const prompt = `根据以下文章内容，写一条简短评论。要求：
+- 严格100-120字
+- 只做内容摘要总结，不发表个人观点和情感
+- 语气客观中立，像新闻简讯
+- 即使原文较短，也要充分概括其传达的信息
+- 不要使用"这篇文章""作者认为"等套话
+
+标题：${title}
+正文：${content.substring(0, 1500)}
+
+请只输出评论内容，不要有任何前缀或引号。`;
+
+  try {
+    const resp = await fetch("https://api.deepseek.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 200,
+        temperature: 0.4,
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    const data = await resp.json() as any;
+    const text = data?.choices?.[0]?.message?.content?.trim() || "";
+    const comment = text.substring(0, 120);  // hard cap at 120 chars
+    return comment || (content.length > 50 ? commentFromContent(title, content) : commentFromTitle(title));
+  } catch {
+    return content.length > 50 ? commentFromContent(title, content) : commentFromTitle(title);
+  }
+}
 
 // ── Persistent dedup ──
 
@@ -62,55 +126,6 @@ async function extractArticleInfo(page: Page): Promise<{ title: string; content:
 
 // ── Comment generation ──
 
-// Sentence openers: varied, neutral, human-like
-const openers = [
-  "看完这篇文章，感觉",
-  "读完之后，我觉得",
-  "认真看了一遍，",
-  "这篇文章让我想到",
-  "通篇读下来，",
-  "花了点时间读完，",
-  "仔细看完了，",
-  "这篇文章讲得挺实在的，",
-  "从头到尾看了一遍，感觉",
-  "刚刚读完这篇文章，",
-  "一口气看完了，",
-  "这篇文章读起来挺顺畅的，",
-];
-
-const midPhrases = [
-  "确实说出了很多人的心里话。",
-  "有些观点挺有启发的。",
-  "可以说是点到了关键处。",
-  "分析得比较到位。",
-  "给了我不小的启发。",
-  "让人有些新的思考。",
-  "整体逻辑还是比较清楚的。",
-  "内容挺充实的。",
-];
-
-const reflections = [
-  "从我个人角度来看，",
-  "说实话，",
-  "其实仔细想想，",
-  "站在普通读者的角度，",
-  "客观来说，",
-  "平心而论，",
-  "回过头来看，",
-  "细细琢磨一下，",
-];
-
-const closers = [
-  "总的来说还是一篇值得一读的文章。",
-  "整体来看，文章的质量还是不错的。",
-  "希望以后能看到更多这样的内容。",
-  "这种类型的文章还是值得花时间看看的。",
-  "感谢作者的分享，挺有收获的。",
-  "算是比较中肯的一篇文章了。",
-  "对相关话题感兴趣的朋友可以看看。",
-  "这篇文章的信息量还是可以的。",
-];
-
 function pick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
@@ -124,51 +139,129 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-function extractKeyPhrase(content: string): string {
-  const sentences = content.split(/[。！？\n]/).filter(s => s.trim().length > 8);
-  if (sentences.length === 0) return "";
-  // Pick a medium-length sentence from the first half
-  const pool = sentences.slice(0, Math.min(4, sentences.length))
-    .filter(s => s.length >= 10 && s.length <= 60);
-  return pick(pool) || sentences[0]?.trim() || "";
+// Extract meaningful sentences from article body
+function extractSentences(content: string, minLen: number = 8): string[] {
+  return content.split(/[。！？\n]/).filter(s => s.trim().length > minLen);
 }
 
-function extractTopic(title: string): string {
-  // Remove common prefixes/suffixes to get the core topic
-  return title
-    .replace(/[：:].*$/, "")
-    .replace(/[，,].*$/, "")
-    .replace(/[丨｜|].*$/, "")
-    .replace(/^\d+[、.．]\s*/, "")
-    .trim();
+// Generate a comment when article has real text content
+function commentFromContent(title: string, content: string): string {
+  const sentences = extractSentences(content, 6);
+  if (sentences.length < 2) return commentFromTitle(title);
+
+  // Pick 2 key sentences from different parts of the article
+  const early = sentences.slice(0, Math.ceil(sentences.length / 2));
+  const late = sentences.slice(Math.ceil(sentences.length / 2));
+  const point1 = pick(early.filter(s => s.length >= 10 && s.length <= 60)) || early[0]?.trim() || "";
+  const point2 = pick(late.filter(s => s.length >= 10 && s.length <= 60)) || "";
+
+  const opens = [
+    "完整看完了这篇文章，",
+    "刚把这篇文章读完，",
+    "文章不长但信息量还可以，",
+    "花了几分钟看完了，",
+  ];
+
+  const reacts = [
+    "觉得写得还是很有道理的。",
+    "感觉分析的思路挺清晰的。",
+    "整体来说是比较客观的。",
+    "内容还是挺实在的。",
+  ];
+
+  const connects = [
+    point1 ? `比如文中提到"${point1.substring(0, 40)}"，这一点确实值得注意。` : "",
+    point1 ? `像"${point1.substring(0, 30)}"这部分内容，可以说是有一定参考价值的。` : "",
+    point1 ? `尤其是关于"${point1.substring(0, 35)}"这一段，读完之后有些启发。` : "",
+    "作者的思路还是比较清晰的。",
+    "有些观点确实能引发思考。",
+  ].filter(Boolean);
+
+  const personalViews = [
+    "个人觉得",
+    "在我看来",
+    "说实话",
+    "其实仔细想想",
+  ];
+
+  const views = [
+    point2 ? `"${point2.substring(0, 35)}"这个角度挺有意思的。` : "文章中提到的现象确实普遍存在。",
+    point2 ? `关于"${point2.substring(0, 30)}"的说法，我比较认同。` : "文章中反映的问题值得关注。",
+    "很多事情确实是需要时间去验证的。",
+    "每个时代都有每个时代的特点和挑战。",
+  ];
+
+  let comment = pick(opens) + pick(reacts) + pick(connects) + pick(personalViews) + pick(views);
+
+  // Pad to 100+ chars if needed
+  const extras = [
+    "希望以后能看到更多这方面的讨论。",
+    "总的来说，对相关话题感兴趣的朋友可以看看。",
+    "大家怎么看这个问题呢？",
+    "这也算是一个值得探讨的话题了。",
+    "能引发一些思考的文章就是好文章。",
+  ];
+  if (comment.length < 100) comment += pick(extras);
+
+  return comment.substring(0, 300);
 }
 
-function generateCommentFromArticle(title: string, content: string): string {
-  const topic = extractTopic(title);
-  const keyPhrase = extractKeyPhrase(content);
+// Generate a comment when article has no text (video, image-only)
+function commentFromTitle(title: string): string {
+  // Interpret the title topic rather than repeating it
+  const opens = [
+    "这个话题挺有意思的，",
+    "最近也在关注这方面，",
+    "这个话题其实蛮值得聊聊的，",
+    "刷到这条内容，",
+    "关于这类话题，",
+  ];
 
-  // Build comment from shuffled sentence parts
-  const parts = shuffle([
-    `${pick(openers)}${topic ? `关于"${topic}"这个话题，` : ""}${pick(midPhrases)}`,
-    keyPhrase ? `${pick(reflections)}文章中提到的"${keyPhrase}"这一点让我印象比较深。` : `${pick(reflections)}文章里的一些观点确实值得思考。`,
-    pick(closers),
+  const opinions = [
+    "我觉得还是要具体情况具体分析。",
+    "每个人的看法可能不太一样。",
+    "从不同的角度看，可能会有不同的理解。",
+    "这种事情其实没有绝对的对错。",
+    "关键还是要看实际情况是什么样的。",
+  ];
+
+  const personalViews = [
+    "说实话，",
+    "个人感觉，",
+    "从普通人的角度来说，",
+    "细细想想，",
+    "平心而论，",
+  ];
+
+  const closers = [
+    "希望相关内容能多一些。",
+    "这也是一个值得关注的方向。",
+    "期待后续能有更多报道。",
+    "总体来说是值得一看的内容。",
+    "关注这类话题的人应该不少。",
+  ];
+
+  let comment = pick(opens) + pick(opinions) + pick(personalViews);
+
+  // Reference the topic area without directly quoting the title
+  const topicRefs = shuffle([
+    "现实生活中的确会遇到类似的情况。",
+    "不同的人站在不同的立场，想法自然不同。",
+    "社会在发展，很多事情也在慢慢变化。",
+    "有讨论才有进步，这是好事。",
+    "信息时代，多了解一些总是好的。",
   ]);
+  comment += topicRefs[0] + pick(closers);
 
-  let comment = parts.join("");
-  
-  // Ensure minimum 100 characters
-  if (comment.length < 100) {
-    const extras = shuffle([
-      "对这方面感兴趣的读者不妨花点时间看看原文。",
-      "有些细节写得还是挺用心的，能看出作者做了功课。",
-      "虽然有些地方还可以更深入，但整体已经不错了。",
-      "每个人的看法可能不同，但文章提供了一个不错的视角。",
-      "在信息泛滥的时代，能静下心写这样的文章不容易。",
-    ]);
-    comment += extras[0];
-  }
+  // Pad if needed
+  const extras = [
+    "能引发思考的内容就是好内容。",
+    "希望大家能理性讨论。",
+    "多听听不同的声音没坏处。",
+  ];
+  if (comment.length < 100) comment += pick(extras);
 
-  return comment.substring(0, 300); // cap at 300 chars
+  return comment.substring(0, 300);
 }
 
 // ── Utils ──
@@ -225,7 +318,25 @@ async function typeComment(page: Page, comment: string): Promise<boolean> {
   return postOk;
 }
 
-// ── Main interaction ──
+// ── Resolve trending page to article URL ──
+
+async function resolveTrendingUrl(page: Page, url: string): Promise<string | null> {
+  if (!url.includes("/trending/")) return url;
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20000 });
+    await page.waitForTimeout(5000);
+    const href = await page.evaluate(() => {
+      const blocks = document.querySelector(".topic-blocks-wrapper");
+      if (!blocks) return null;
+      const link = blocks.querySelector('a[href*="/article/"]');
+      return link ? link.getAttribute("href") : null;
+    });
+    if (!href) return null;
+    return href.startsWith("http") ? href : `https://www.toutiao.com${href}`;
+  } catch {
+    return null;
+  }
+}
 
 export async function interactArticles(page: Page, count: number = 5): Promise<void> {
   count = Math.min(count, 5);
@@ -234,15 +345,21 @@ export async function interactArticles(page: Page, count: number = 5): Promise<v
 
   console.log(`正在获取头条热榜文章...`);
   let articles = await fetchToutiaoItems();
-  // Filter out already-commented articles before shuffling
   articles = articles.filter(a => !commentedUrls.has(a.url));
   articles = articles.sort(() => Math.random() - 0.5);
-  console.log(`  共获取 ${articles.length} 篇新文章\n`);
 
   if (articles.length === 0) {
-    console.log("未获取到文章，退出");
-    return;
+    console.log("  RSS 无新文章，从头条首页获取...");
+    const homeArticles = await scrapeHomeArticles(page);
+    articles = homeArticles
+      .filter(a => !commentedUrls.has(a.url))
+      .map(a => ({ ...a, source: "头条首页", category: "", rootCategory: "", publishedAt: "", rank: 0 } as any));
+    if (articles.length === 0) {
+      console.log("未获取到文章，退出");
+      return;
+    }
   }
+  console.log(`  共获取 ${articles.length} 篇新文章\n`);
 
   let likeCount = 0;
   let commentCount = 0;
@@ -280,7 +397,20 @@ export async function interactArticles(page: Page, count: number = 5): Promise<v
         continue;
       }
 
-      await page.goto(article.url, { waitUntil: "domcontentloaded", timeout: 30000 });
+      // Resolve trending page to actual article URL
+      let articleUrl = article.url;
+      if (articleUrl.includes("/trending/")) {
+        const resolved = await resolveTrendingUrl(page, articleUrl);
+        if (resolved) {
+          articleUrl = resolved;
+          console.log(`  🔗 事件详情: ${articleUrl}`);
+        } else {
+          console.log("  ⚠ 未能解析事件详情，跳过");
+          continue;
+        }
+      }
+
+      await page.goto(articleUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
       await page.waitForTimeout(8000);
 
       // Mark as processed immediately so we don't repeat on retry
@@ -311,13 +441,8 @@ export async function interactArticles(page: Page, count: number = 5): Promise<v
         if (await loginMask.count() > 0) {
           console.log("  ⚠ 未登录，跳过评论");
         } else {
-          // Generate comment from article content (or title fallback)
-          const sourceText = content.length > 20 ? content : title;
-          const comment = generateCommentFromArticle(
-            title || article.title,
-            sourceText
-          );
-          console.log(`  生成评论 (${comment.length}字)`);
+          const comment = await generateCommentByLLM(title || article.title, content);
+          console.log(`  生成评论 (${comment.length}字): ${comment}`);
 
           const ok = await typeComment(page, comment);
           if (ok) {

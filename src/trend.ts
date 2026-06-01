@@ -100,7 +100,6 @@ export async function fetchToutiaoItems(): Promise<HotItem[]> {
         if (!titleMatch || !linkMatch) continue;
         let title = titleMatch[1].trim();
         const url = linkMatch[1].trim();
-        if (url.includes("/trending/")) continue;
         if (seen.has(url)) continue;
         seen.add(url);
         title = title.replace(/\s*-\s*来自【\s*头条\s*】\s*$/, "");
