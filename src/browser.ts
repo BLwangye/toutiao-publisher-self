@@ -44,6 +44,8 @@ export async function createSession(): Promise<BrowserSession> {
 
 export async function closeSession(session: BrowserSession): Promise<void> {
   try {
+    // Open a blank page first so Chrome doesn't exit when we close the working page
+    await session.context.newPage();
     await session.page.close();
   } catch {
     // page might already be closed

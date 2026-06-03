@@ -51,7 +51,7 @@ async function generateCommentByLLM(title: string, content: string): Promise<str
       body: JSON.stringify({
         model: "deepseek-chat",
         messages: [{ role: "user", content: prompt }],
-        max_tokens: 200,
+        max_tokens: 300,
         temperature: 0.4,
       }),
       signal: AbortSignal.timeout(30000),
@@ -59,7 +59,7 @@ async function generateCommentByLLM(title: string, content: string): Promise<str
 
     const data = await resp.json() as any;
     const text = data?.choices?.[0]?.message?.content?.trim() || "";
-    const comment = text.substring(0, 120);  // hard cap at 120 chars
+    const comment = smartTruncate(text, 120);
     return comment || (content.length > 50 ? commentFromContent(title, content) : commentFromTitle(title));
   } catch {
     return content.length > 50 ? commentFromContent(title, content) : commentFromTitle(title);
@@ -70,10 +70,19 @@ async function generateCommentByLLM(title: string, content: string): Promise<str
 
 const DEDUP_FILE = "commented.json";
 
+// Extract stable ID from toutiao URLs so that changing query params
+// (e.g. hot_board_impr_id) don't break dedup.
+function normalizeUrl(url: string): string {
+  const m = url.match(/toutiao\.com\/(trending|article|a)\/(\d+)/);
+  if (m) return `${m[1]}/${m[2]}`;
+  return url;
+}
+
 function loadCommented(): Set<string> {
   try {
     const data = JSON.parse(fs.readFileSync(DEDUP_FILE, "utf-8"));
-    return new Set(data.urls ?? []);
+    // Normalize on load to clean up old full-URL entries
+    return new Set((data.urls ?? []).map(normalizeUrl));
   } catch {
     return new Set();
   }
@@ -137,6 +146,19 @@ function shuffle<T>(arr: T[]): T[] {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+// Truncate at last complete sentence boundary before maxLen
+function smartTruncate(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  // Find the last sentence-ending punctuation before maxLen
+  const slice = text.substring(0, maxLen);
+  const match = slice.match(/.*[。！？]/);
+  if (match) return match[0];
+  // Fallback: find last comma/break
+  const commaMatch = slice.match(/.*[，、；]/);
+  if (commaMatch) return commaMatch[0];
+  return slice;
 }
 
 // Extract meaningful sentences from article body
@@ -345,14 +367,14 @@ export async function interactArticles(page: Page, count: number = 5): Promise<v
 
   console.log(`正在获取头条热榜文章...`);
   let articles = await fetchToutiaoItems();
-  articles = articles.filter(a => !commentedUrls.has(a.url));
+  articles = articles.filter(a => !commentedUrls.has(normalizeUrl(a.url)));
   articles = articles.sort(() => Math.random() - 0.5);
 
   if (articles.length === 0) {
     console.log("  RSS 无新文章，从头条首页获取...");
     const homeArticles = await scrapeHomeArticles(page);
     articles = homeArticles
-      .filter(a => !commentedUrls.has(a.url))
+      .filter(a => !commentedUrls.has(normalizeUrl(a.url)))
       .map(a => ({ ...a, source: "头条首页", category: "", rootCategory: "", publishedAt: "", rank: 0 } as any));
     if (articles.length === 0) {
       console.log("未获取到文章，退出");
@@ -371,7 +393,7 @@ export async function interactArticles(page: Page, count: number = 5): Promise<v
     if (articleIdx >= articles.length) {
       console.log("  文章池耗尽，从头条首页获取...");
       const homeArticles = await scrapeHomeArticles(page);
-      const newArticles = homeArticles.filter(a => !commentedUrls.has(a.url));
+      const newArticles = homeArticles.filter(a => !commentedUrls.has(normalizeUrl(a.url)));
       if (newArticles.length === 0) {
         console.log("  无新文章可用，退出");
         break;
@@ -392,7 +414,7 @@ export async function interactArticles(page: Page, count: number = 5): Promise<v
       console.log(`  📄 ${article.url}`);
 
       // Skip if already commented in this batch
-      if (commentedUrls.has(article.url)) {
+      if (commentedUrls.has(normalizeUrl(article.url))) {
         console.log("  ⏭ 已评论过，跳过");
         continue;
       }
@@ -414,7 +436,7 @@ export async function interactArticles(page: Page, count: number = 5): Promise<v
       await page.waitForTimeout(8000);
 
       // Mark as processed immediately so we don't repeat on retry
-      commentedUrls.add(article.url);
+      commentedUrls.add(normalizeUrl(article.url));
       saveCommented(commentedUrls);
 
       // Read article content

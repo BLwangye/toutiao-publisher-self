@@ -7,7 +7,7 @@ export const CONFIG = {
   PUBLISH_RETRY_INTERVAL: 2_000,
   CHROME_PATH: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   CDP_PORT: 9222,
-  CHROME_DATA_DIR: "C:\\Users\\baifa\\.config\\toutiao-chrome",
+  CHROME_DATA_DIR: "C:\\Users\\bf131\\.config\\toutiao-chrome",
 } as const;
 
 export const SELECTORS = {

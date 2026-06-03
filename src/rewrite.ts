@@ -33,19 +33,20 @@ export interface ArticleSource {
   url: string;
 }
 
-export interface FactSet {
-  scores: Set<string>;
-  percentages: Set<string>;
-  numbers: Set<string>;
-  dates: Set<string>;
-  ranks: Set<string>;
-  names: Set<string>; // proper nouns/long Chinese names extracted
+export interface FactItem {
+  type: "number" | "date" | "person" | "location" | "org" | "event";
+  value: string;
+  context: string;
+}
+
+interface FactExtraction {
+  facts: FactItem[];
 }
 
 interface FactDiff {
-  missing: { type: string; value: string }[];
-  altered: { type: string; original: string; found: string }[];
-  extra: { type: string; value: string }[];
+  missing: FactItem[];
+  altered: { original: FactItem; found: string }[];
+  extra: FactItem[];
 }
 
 // ── Scrape ──
@@ -60,21 +61,72 @@ export async function scrapeArticle(
   const result = await page.evaluate(() => {
     const title =
       document.querySelector("h1")?.textContent?.trim() || "";
+
+    // ── Find the main content container ──
     const article = document.querySelector("article");
 
-    // Collect all text paragraphs
+    // Remove non-content elements before extracting text
+    const excludeSelectors = [
+      "figure", "figcaption", "aside", "nav",
+      '[class*="caption"]', '[class*="credit"]',
+      '[class*="author"]', '[class*="byline"]',
+      '[class*="timestamp"]', '[class*="published"]',
+      '[class*="share"]', '[class*="social"]',
+      '[class*="related"]', '[class*="recommend"]',
+      '[data-component*="related"]',
+      '[aria-hidden="true"]',
+    ];
+    const container = (article ?? document.body).cloneNode(true) as HTMLElement;
+    for (const sel of excludeSelectors) {
+      for (const el of container.querySelectorAll(sel)) {
+        el.remove();
+      }
+    }
+
+    // Collect text from content-bearing elements
     const paragraphs: string[] = [];
-    const els = article
-      ? article.querySelectorAll("p, h2, h3, li")
-      : document.querySelectorAll("p, h2, h3, li");
+    const els = container.querySelectorAll("p, h2, h3, li, [data-component='text-block']");
+
+    // Non-content patterns — lines matching these are skipped
+    const skipPatterns = [
+      /^图像来源[,，]/, /^图片来源[,，]/, /^Image\s*source[,:]/i,
+      /^(Getty|Reuters|AFP|EPA|AP)\b/i,
+      /^作者[：:]\s*/,
+      /^(BBC|CNN)\s*(记者|News|Correspondent|Editor)/i,
+      /^(记者|编辑|撰稿)[：:]/,
+      /^发布(时间|于)/,
+      /^(Published|Posted)\b/i,
+      /阅读时间[：:]/,
+      /^\d+\s*(分钟?|min)/,
+      /^更多相关(内容|文章|话题|阅读)/,
+      /^相关(推荐|阅读|链接)/,
+      /^推荐(阅读|内容)/,
+      /^热门(推荐|文章)/,
+      /^(Cookies|Cookie)\b/i,
+      /^(联络|联系|关于|隐私|条款|版权|©)\b/,
+      /值得信赖/,
+      /^(分享|转发|收藏|评论|点赞)[：:]?/,
+      /^Advertisement$/i,
+      /^$/,
+    ];
+
     for (const el of els) {
-      const t = el.textContent?.trim();
-      if (t && t.length > 4) paragraphs.push(t);
+      const t = el.textContent?.trim() || "";
+
+      // Skip short metadata lines
+      if (t.length < 6) continue;
+
+      // Check against non-content patterns
+      let skip = false;
+      for (const p of skipPatterns) {
+        if (p.test(t)) { skip = true; break; }
+      }
+      if (skip) continue;
+
+      paragraphs.push(t);
     }
 
     const content = paragraphs.join("\n");
-
-    // Also grab HTML for possible reuse
     const html = (article ?? document.body).innerHTML;
     return { title, content, html };
   });
@@ -91,117 +143,40 @@ export async function scrapeArticle(
   return source;
 }
 
-// ── Fact Extraction ──
+// ── DeepSeek Fact Extraction ──
 
-export function extractSportsFacts(text: string): FactSet {
-  const facts: FactSet = {
-    scores: new Set(),
-    percentages: new Set(),
-    numbers: new Set(),
-    dates: new Set(),
-    ranks: new Set(),
-    names: new Set(),
-  };
+const EXTRACT_SYSTEM_PROMPT = `你是事实核查员。从以下文章中提取所有关键事实，输出为 JSON。
 
-  // Scores: "3-0", "100:98", "33分胜", "2比1"
-  for (const m of text.matchAll(/\d+\s*[-:–—比]\s*\d+/g)) {
-    facts.scores.add(m[0].trim());
-  }
+规则：
+1. 只提取可验证的客观事实，不提取观点、评论、推测
+2. 每条事实包含 value（原文中的精确表述）和 context（简短语境说明）
+3. 分类标准：
+   - number: 数字、百分比、金额、统计数据（如"同比增长12.3%""造成3死5伤""市值1.2万亿"）
+   - date: 日期、时间表述（如"2026年6月2日""上周三"）
+   - person: 真实人物姓名（不含泛指"网友""市民"）
+   - location: 地名、地理位置（如"云南大理""北京市朝阳区"）
+   - org: 机构、公司、组织名称（如"英伟达""央行""国务院"）
+   - event: 具体事件描述（如"发生肢体冲突""通过新法案""发布新产品"）
+4. 如果原文没有某类事实，对应数组为空
+5. 严格按 JSON Schema 输出，不要有任何额外文字
 
-  // Percentages: "52.3%", "20%"
-  for (const m of text.matchAll(/\d+(?:\.\d+)?%/g)) {
-    facts.percentages.add(m[0]);
-  }
+输出格式：
+{
+  "facts": [
+    { "type": "number", "value": "12.3%", "context": "GDP同比增长率" }
+  ]
+}`;
 
-  // Numbers with units: "30亿韩元", "4400亿", "17943台", "33℃"
-  for (const m of text.matchAll(
-    /\d+[\d,]*\.?\d*\s*(?:万|亿|千|百)?\s*(?:元|美元|韩元|欧元|分|场|人|个|次|秒|米|公里|台|℃|岁)/g
-  )) {
-    facts.numbers.add(m[0].trim());
-  }
-
-  // Dates: "2026-06-01", "2026年6月1日", "6月1日"
-  for (const m of text.matchAll(
-    /(?:\d{4}[年\-/])?\d{1,2}[月\-/]\d{1,2}日?/g
-  )) {
-    facts.dates.add(m[0]);
-  }
-
-  // Ranks: "第1名", "排名第3", "榜首"
-  for (const m of text.matchAll(/第\s*\d+\s*(?:名|位)|排名第\s*\d+/g)) {
-    facts.ranks.add(m[0].trim());
-  }
-  // "居榜首" pattern
-  if (/居榜首/.test(text)) facts.ranks.add("居榜首");
-
-  // Proper names: Chinese names (2-4 chars), foreign names in Chinese (3-8 chars)
-  // Heuristic: look for capitalized sequences, or known Chinese name patterns
-  const nameMatches = new Set<string>();
-
-  // Foreign names: Latin sequences >= 2 chars with capital first
-  for (const m of text.matchAll(/[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*/g)) {
-    const name = m[0].trim();
-    if (name.length >= 2) nameMatches.add(name);
-  }
-
-  // Chinese proper nouns: longer sequences that look like names/teams
-  // Team patterns: "XX队", "XX男/女篮/足"
-  for (const m of text.matchAll(
-    /[\u4e00-\u9fff]{2,6}(?:队|男(?:篮|足|排)|女(?:篮|足|排)|男篮|女篮|男足|女足)/g
-  )) {
-    nameMatches.add(m[0]);
-  }
-
-  facts.names = nameMatches;
-
-  console.log(
-    `事实提取: 比分${facts.scores.size} 百分比${facts.percentages.size} 数字${facts.numbers.size} 日期${facts.dates.size} 排名${facts.ranks.size} 名称${facts.names.size}`
-  );
-
-  return facts;
-}
-
-// ── DeepSeek Rewrite ──
-
-const SPORTS_SYSTEM_PROMPT = `你是体育新闻编辑。请润色以下文章，要求：
-1. 只优化语言表达和段落结构
-2. 严禁修改任何数据：比分、数字、百分比、排名、日期
-3. 严禁修改或替换任何人名、队名、地名
-4. 严禁增删任何事实信息
-5. 可以调整句式、去掉冗余、让表达更流畅
-6. 输出格式为 HTML（用 <h2> 做小标题，<p> 做段落，<ol><li> 做有序列表，<ul><li> 做无序列表），不要用代码块包裹
-7. 适当使用 <strong> 加粗关键数据、重要结论、球员/队名
-8. 每个 <h2> 标题前可用合适的体育 emoji（如 🏆⚽🏀🏅⚾🎾），不用太多，全文 2-4 个即可`;
-
-const DEFAULT_SYSTEM_PROMPT = `你是新闻编辑。请润色以下文章，要求：
-1. 只优化语言表达和段落结构
-2. 严禁修改任何数据：数字、百分比、排名、日期
-3. 严禁修改或替换任何人名、地名、专有名词
-4. 严禁增删任何事实信息
-5. 可以调整句式、去掉冗余、让表达更流畅
-6. 输出格式为 HTML（用 <h2> 做小标题，<p> 做段落，<ol><li> 做有序列表，<ul><li> 做无序列表），不要用代码块包裹
-7. 适当使用 <strong> 加粗关键数据、核心观点、重要结论
-8. 每个 <h2> 标题前可搭配 1 个合适的 emoji（全文 2-4 个即可，克制使用）`;
-
-export async function rewriteViaDeepSeek(
-  title: string,
-  content: string,
-  category: Category | null
-): Promise<string | null> {
+async function extractFactsViaDeepSeek(content: string, title: string): Promise<FactItem[]> {
   if (!DEEPSEEK_API_KEY) {
-    console.log("未配置 DeepSeek API Key，跳过改写");
-    return null;
+    console.log("未配置 DeepSeek API Key，跳过事实提取");
+    return [];
   }
 
-  const systemPrompt =
-    category === "体育" ? SPORTS_SYSTEM_PROMPT : DEFAULT_SYSTEM_PROMPT;
+  const text = content.substring(0, 4000);
+  const userPrompt = `标题：${title}\n\n原文：\n${text}`;
 
-  const userPrompt = `标题：${title}
-
-原文：
-${content.substring(0, 4000)}`;
-
-  try {
+  const makeRequest = async (): Promise<FactItem[]> => {
     const resp = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -211,7 +186,100 @@ ${content.substring(0, 4000)}`;
       body: JSON.stringify({
         model: "deepseek-chat",
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: EXTRACT_SYSTEM_PROMPT },
+          { role: "user", content: userPrompt },
+        ],
+        max_tokens: 2000,
+        temperature: 0.1,
+        response_format: { type: "json_object" },
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    const data = (await resp.json()) as any;
+    const raw = data?.choices?.[0]?.message?.content?.trim() || "";
+    const parsed = JSON.parse(raw) as FactExtraction;
+    return parsed.facts ?? [];
+  };
+
+  try {
+    const facts = await withRetry(makeRequest, 2);
+    console.log(`事实提取: ${facts.length} 条 (${[...new Set(facts.map(f => f.type))].join(", ")})`);
+    return facts;
+  } catch (err) {
+    console.error("事实提取失败:", (err as Error).message);
+    throw new Error("FACT_EXTRACTION_FAILED: 无法提取原文事实，终止发布");
+  }
+}
+
+// ── Fact formatting for prompt injection ──
+
+function formatFactsForPrompt(facts: FactItem[]): string {
+  if (facts.length === 0) return "";
+  const typeLabels: Record<string, string> = {
+    number: "数字/数据",
+    date: "日期/时间",
+    person: "人名",
+    location: "地名",
+    org: "机构/组织",
+    event: "事件",
+  };
+  const groups = new Map<string, string[]>();
+  for (const f of facts) {
+    const label = typeLabels[f.type] ?? f.type;
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label)!.push(f.value);
+  }
+  const lines: string[] = [];
+  for (const [label, values] of groups) {
+    lines.push(`- ${label}: ${values.join("、")}`);
+  }
+  return lines.join("\n");
+}
+
+// ── DeepSeek Rewrite ──
+
+const REWRITE_SYSTEM_PROMPT = `你是新闻编辑。请润色以下文章，要求：
+1. 只优化语言表达和段落结构
+2. 严禁修改任何数据：数字、百分比、金额、统计数字
+3. 严禁修改或替换任何人名、地名、机构名、专有名词
+4. 严禁增删任何事实信息，严禁虚构数据
+5. 可以调整句式、去掉冗余、让表达更流畅
+6. 输出格式为 HTML（用 <h2> 做小标题，<p> 做段落，<ol><li> 做有序列表，<ul><li> 做无序列表），不要用代码块包裹
+7. 适当使用 <strong> 加粗关键数据、核心观点、重要结论
+8. 每个 <h2> 标题前可搭配 1 个合适的 emoji（全文 2-4 个即可，克制使用）`;
+
+async function rewriteViaDeepSeek(
+  title: string,
+  content: string,
+  facts: FactItem[]
+): Promise<string | null> {
+  if (!DEEPSEEK_API_KEY) {
+    console.log("未配置 DeepSeek API Key，跳过改写");
+    return null;
+  }
+
+  const factsBlock = formatFactsForPrompt(facts);
+  const factsConstraint = factsBlock
+    ? `\n\n【关键事实清单 — 严禁修改或删除以下任何内容】\n${factsBlock}\n`
+    : "";
+
+  const userPrompt = `标题：${title}
+
+原文：
+${content.substring(0, 4000)}${factsConstraint}`;
+
+  const makeRequest = async (): Promise<string | null> => {
+    const resp = await fetch("https://api.deepseek.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: [
+          { role: "system", content: REWRITE_SYSTEM_PROMPT },
           { role: "user", content: userPrompt },
         ],
         max_tokens: 4000,
@@ -226,255 +294,307 @@ ${content.substring(0, 4000)}`;
       console.log("DeepSeek 返回空内容");
       return null;
     }
-    console.log(`DeepSeek 改写完成 (${text.length}字)`);
     return text;
+  };
+
+  try {
+    const rewritten = await withRetry(makeRequest, 2);
+    if (rewritten) {
+      console.log(`DeepSeek 改写完成 (${rewritten.length}字)`);
+      return rewritten;
+    }
+    console.error("DeepSeek 改写返回空内容，终止");
+    throw new Error("REWRITE_FAILED: DeepSeek 改写失败，终止发布");
   } catch (err) {
-    console.error("DeepSeek 调用失败:", (err as Error).message);
-    return null;
+    console.error("改写失败:", (err as Error).message);
+    throw new Error("REWRITE_FAILED: DeepSeek 改写失败，终止发布");
   }
+}
+
+// ── Retry ──
+
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 2
+): Promise<T> {
+  let lastErr: Error | undefined;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err as Error;
+      if (attempt < maxRetries) {
+        console.log(`重试 ${attempt + 1}/${maxRetries}: ${lastErr.message}`);
+      }
+    }
+  }
+  throw lastErr ?? new Error("withRetry: unreachable");
 }
 
 // ── Validation ──
 
-export function validateFacts(
-  rewritten: string,
-  originalFacts: FactSet
-): FactDiff {
-  const rewrittenFacts = extractSportsFacts(rewritten);
+function hasSameDigits(a: string, b: string): boolean {
+  const digitsA = a.replace(/\D/g, "");
+  const digitsB = b.replace(/\D/g, "");
+  return digitsA.length > 1 && digitsB.length > 1 && digitsA === digitsB && a !== b;
+}
+
+// Check if enough key tokens from a fact appear in the rewritten text.
+// Used for date, event, person, location, and org facts that are often rephrased.
+export function fuzzyMatch(original: string, rewritten: string, factType: string): boolean {
+  const tokens: string[] = [];
+
+  if (factType === "date") {
+    // Dates: extract digit+unit pairs like "8月", "7日", "2026年"
+    const dateTokens = original.match(/\d+\s*[月日年]|\d{4}/g) || [];
+    tokens.push(...dateTokens.map(t => t.replace(/\s/g, "")));
+    // Also pure digits
+    const digits = original.match(/\d+/g) || [];
+    tokens.push(...digits);
+  } else {
+    // Events, persons, locations, orgs: CJK bigrams + numbers + Latin words
+    const cjk = original.match(/[一-鿿]/g) || [];
+    for (let i = 0; i < cjk.length - 1; i++) {
+      tokens.push(cjk[i] + cjk[i + 1]);
+    }
+    const numLatin = original.match(/\d+|[A-Za-z]+/g) || [];
+    tokens.push(...numLatin);
+  }
+
+  if (tokens.length === 0) return rewritten.includes(original);
+
+  const found = tokens.filter(t => rewritten.includes(t));
+  const ratio = found.length / tokens.length;
+
+  // Short facts (≤4 tokens) use relaxed 50% threshold to avoid
+  // false positives on names/places with few bigrams.
+  const threshold = tokens.length <= 4 ? 0.5 : 0.7;
+  return ratio >= threshold;
+}
+
+export function validateFacts(rewritten: string, originalFacts: FactItem[]): FactDiff {
   const diff: FactDiff = { missing: [], altered: [], extra: [] };
 
-  // Check each fact type
-  const factTypes: { key: keyof FactSet; label: string }[] = [
-    { key: "scores", label: "比分" },
-    { key: "percentages", label: "百分比" },
-    { key: "numbers", label: "数字" },
-    { key: "dates", label: "日期" },
-    { key: "ranks", label: "排名" },
-    { key: "names", label: "名称" },
-  ];
-
-  for (const { key, label } of factTypes) {
-    for (const v of originalFacts[key]) {
-      if (!rewritten.includes(v)) {
-        diff.missing.push({ type: label, value: v });
+  // ── Check each original fact exists in rewritten ──
+  for (const fact of originalFacts) {
+    // Use fuzzy token matching for types that get rephrased
+    if (fact.type === "event" || fact.type === "date" ||
+        fact.type === "person" || fact.type === "location" || fact.type === "org") {
+      if (!fuzzyMatch(fact.value, rewritten, fact.type)) {
+        diff.missing.push(fact);
       }
+      continue;
     }
-    for (const v of rewrittenFacts[key]) {
-      if (!originalFacts[key].has(v) && !rewritten.includes(v) === false) {
-        // Check if this rewritten fact appears to be an altered version
-        // Simple heuristic: if it shares numeric part with an original fact
-        let isAltered = false;
-        for (const ov of originalFacts[key]) {
-          if (v !== ov && hasSameDigits(v, ov)) {
-            diff.altered.push({ type: label, original: ov, found: v });
-            isAltered = true;
+
+    // Number type: exact string match with altered-digit detection
+    if (!rewritten.includes(fact.value)) {
+      let foundAltered = false;
+      const digitPattern = fact.value.replace(/\D/g, "");
+      if (digitPattern.length >= 2) {
+        const rewrittenNums = rewritten.match(/\d+[\d,.]*\s*[万亿千百]?\s*[元美元韩元欧元分场人个次秒米公里台℃岁%倍]?/g) || [];
+        for (const rn of rewrittenNums) {
+          const rnDigits = rn.replace(/\D/g, "");
+          if (rnDigits === digitPattern && rn !== fact.value) {
+            diff.altered.push({ original: fact, found: rn });
+            foundAltered = true;
             break;
           }
         }
-        if (!isAltered && !originalFacts[key].has(v)) {
-          diff.extra.push({ type: label, value: v });
-        }
+      }
+      if (!foundAltered) {
+        diff.missing.push(fact);
       }
     }
   }
 
+  // ── Extra detection: numbers in rewritten that aren't in original facts ──
+  // Warn-only — does not block publishing, but surfaces potential hallucinations.
+  const originalNumberValues = new Set(
+    originalFacts.filter(f => f.type === "number").map(f => f.value)
+  );
+  const rewrittenNumsAll = rewritten.match(
+    /\d+[\d,.]*\s*[万亿千百]?\s*[元美元韩元欧元分场人个次秒米公里台℃岁%倍]?/g
+  ) || [];
+  const seenDigits = new Set<string>();
+  for (const f of originalFacts.filter(f => f.type === "number")) {
+    seenDigits.add(f.value.replace(/\D/g, ""));
+  }
+  for (const rn of rewrittenNumsAll) {
+    const rnDigits = rn.replace(/\D/g, "");
+    if (rnDigits.length >= 2 && !seenDigits.has(rnDigits) && !originalNumberValues.has(rn)) {
+      diff.extra.push({ type: "number", value: rn, context: "改写后新增的数字" });
+      seenDigits.add(rnDigits); // dedup same number appearing multiple times
+    }
+  }
+
+  // ── Log results ──
   if (diff.missing.length > 0) {
     console.log(`⚠ 缺失事实 (${diff.missing.length}):`);
     for (const d of diff.missing) {
-      console.log(`  [${d.type}] ${d.value}`);
+      console.log(`  [${d.type}] ${d.value}  (${d.context})`);
     }
   }
   if (diff.altered.length > 0) {
     console.log(`⚠ 篡改事实 (${diff.altered.length}):`);
     for (const d of diff.altered) {
-      console.log(`  [${d.type}] ${d.original} → ${d.found}`);
+      console.log(`  [${d.original.type}] ${d.original.value} → ${d.found}  (${d.original.context})`);
     }
   }
   if (diff.extra.length > 0) {
-    console.log(`⚠ 新增事实 (${diff.extra.length}):`);
+    console.log(`🔍 疑似新增数据 (${diff.extra.length}) — 不阻塞发布，请人工判断:`);
     for (const d of diff.extra) {
-      console.log(`  [${d.type}] ${d.value}`);
+      console.log(`  [${d.type}] ${d.value}  (${d.context})`);
     }
   }
-  if (
-    diff.missing.length === 0 &&
-    diff.altered.length === 0 &&
-    diff.extra.length === 0
-  ) {
+
+  if (diff.missing.length === 0 && diff.altered.length === 0) {
     console.log("✅ 事实验证通过，无差异");
   }
 
   return diff;
 }
 
+// ── Sentence count check (for 0-fact articles) ──
+
+export function checkSentenceCount(original: string, rewritten: string): boolean {
+  if (!original || !rewritten) return true;
+  const origSentences = original.split(/[。！？\n]/).filter(s => s.trim().length > 0);
+  const rewriteSentences = rewritten.split(/[。！？\n]/).filter(s => s.trim().length > 0);
+  if (origSentences.length === 0) return true;
+  const ratio = rewriteSentences.length / origSentences.length;
+  return ratio >= 0.6;
+}
+
 // ── Fix ──
 
-export async function fixDiscrepancies(
+async function fixDiscrepancies(
   rewritten: string,
-  originalFacts: FactSet,
+  originalFacts: FactItem[],
   diff: FactDiff
 ): Promise<string> {
-  if (diff.missing.length > 0 || diff.altered.length > 0) {
-    console.log("事实有差异，发送 DeepSeek 二次修正...");
+  console.log("事实有差异，发送 DeepSeek 二次修正...");
 
-    const correctionPrompt = `以下改写后的文章存在一些数据错误：
+  const missingItems = diff.missing.map(d =>
+    `- [${d.type}] "${d.value}" (${d.context}) — 请确保文中包含此项`
+  ).join("\n");
+  const alteredItems = diff.altered.map(d =>
+    `- [${d.original.type}] "${d.original.value}" 被改为 "${d.found}" — 请恢复原值`
+  ).join("\n");
+
+  const correctionPrompt = `以下改写后的文章存在数据错误：
 
 改写后文章：
 ${rewritten}
 
 需要修正的问题：
-${diff.missing.map((d) => `- 缺失: ${d.type} "${d.value}"，请确保文中包含此项`).join("\n")}
-${diff.altered.map((d) => `- 篡改: "${d.original}" 被改成了 "${d.found}"，请恢复为原值`).join("\n")}
+${missingItems}
+${alteredItems}
 
-请修正上述问题后输出完整的修正版文章，不要有任何解释。`;
+请修正上述所有问题，输出完整的修正版文章。严禁修改问题清单中未提及的内容。不要有任何解释。`;
 
-    try {
-      const resp = await fetch(
-        "https://api.deepseek.com/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
-          },
-          body: JSON.stringify({
-            model: "deepseek-chat",
-            messages: [{ role: "user", content: correctionPrompt }],
-            max_tokens: 4000,
-            temperature: 0.1,
-          }),
-          signal: AbortSignal.timeout(60_000),
-        }
-      );
+  try {
+    const resp = await fetch("https://api.deepseek.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: [{ role: "user", content: correctionPrompt }],
+        max_tokens: 4000,
+        temperature: 0.1,
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
 
-      const data = (await resp.json()) as any;
-      const fixed = data?.choices?.[0]?.message?.content?.trim() || rewritten;
-      console.log(`二次修正完成 (${fixed.length}字)`);
+    const data = (await resp.json()) as any;
+    const fixed = data?.choices?.[0]?.message?.content?.trim() || rewritten;
+    console.log(`二次修正完成 (${fixed.length}字)`);
 
-      // Re-validate
-      const newDiff = validateFacts(fixed, originalFacts);
-      if (newDiff.missing.length > 0 || newDiff.altered.length > 0) {
-        console.log("⚠ 二次修正后仍有差异，使用当前结果");
+    // Re-validate
+    const newDiff = validateFacts(fixed, originalFacts);
+    if (newDiff.missing.length > 0 || newDiff.altered.length > 0) {
+      console.log("⚠ 二次修正后仍有差异，终止发布");
+      console.log("差异详情:");
+      for (const d of newDiff.missing) {
+        console.log(`  缺失 [${d.type}] ${d.value} (${d.context})`);
       }
-      return fixed;
-    } catch (err) {
-      console.error("二次修正失败:", (err as Error).message);
-      return rewritten;
+      for (const d of newDiff.altered) {
+        console.log(`  篡改 [${d.original.type}] ${d.original.value} → ${d.found}`);
+      }
+      throw new Error("VALIDATION_FAILED: 二次修正后仍有事实差异，终止发布");
     }
+    console.log("✅ 二次修正通过事实校验");
+    return fixed;
+  } catch (err) {
+    if ((err as Error).message.startsWith("VALIDATION_FAILED")) throw err;
+    console.error("二次修正失败:", (err as Error).message);
+    throw new Error("FIX_FAILED: DeepSeek 二次修正失败，终止发布");
   }
-
-  return rewritten;
 }
 
 // ── Pipeline ──
+
+export interface PipelineResult {
+  finalContent: string;
+  title: string;
+  usedLLM: boolean;
+  factCount: number;
+}
 
 export async function rewritePipeline(
   page: Page,
   url: string,
   category: Category | null
-): Promise<{ finalContent: string; title: string; usedLLM: boolean }> {
+): Promise<PipelineResult> {
   // 1. Scrape
   const article = await scrapeArticle(page, url);
 
-  // 2. Extract facts (always do this for sports, optionally for others)
-  const facts =
-    category === "体育" ? extractSportsFacts(article.content) : emptyFactSet();
-
-  // 3. Log fact summary
-  if (category === "体育") {
-    logFactSummary(facts, article.content);
+  // 2. Extract facts via DeepSeek (all categories, no exception)
+  let facts: FactItem[] = [];
+  try {
+    facts = await extractFactsViaDeepSeek(article.content, article.title);
+    console.log(`提取 ${facts.length} 条事实`);
+  } catch (err) {
+    // Fact extraction failed → abort, no publish
+    console.error("事实提取失败，终止发布:", (err as Error).message);
+    throw err;
   }
 
-  // 4. Rewrite via DeepSeek
-  const rewritten = await rewriteViaDeepSeek(
-    article.title,
-    article.content,
-    category
-  );
-
-  if (!rewritten) {
-    return {
-      finalContent: wrapHtml(article.content),
-      title: article.title,
-      usedLLM: false,
-    };
-  }
-
-  // 5. Validate
-  if (category === "体育") {
-    const diff = validateFacts(rewritten, facts);
-    if (diff.missing.length > 0 || diff.altered.length > 0) {
-      const fixed = await fixDiscrepancies(rewritten, facts, diff);
-      return { finalContent: fixed, title: article.title, usedLLM: true };
+  // 3. Rewrite via DeepSeek with fact constraints
+  let rewritten: string | null = null;
+  try {
+    rewritten = await rewriteViaDeepSeek(article.title, article.content, facts);
+    if (!rewritten) {
+      throw new Error("REWRITE_FAILED: DeepSeek 改写返回空内容，终止发布");
     }
+  } catch (err) {
+    console.error("改写失败，终止发布:", (err as Error).message);
+    throw err;
   }
 
-  return { finalContent: rewritten, title: article.title, usedLLM: true };
+  // 4. Validate facts
+  const diff = validateFacts(rewritten, facts);
+
+  if (diff.missing.length > 0 || diff.altered.length > 0) {
+    // 5. Attempt fix
+    const fixed = await fixDiscrepancies(rewritten, facts, diff);
+    return { finalContent: fixed, title: article.title, usedLLM: true, factCount: facts.length };
+  }
+
+  // 6. For 0-fact articles, check sentence count didn't collapse
+  if (facts.length === 0 && !checkSentenceCount(article.content, rewritten)) {
+    console.log("⚠ 原文无事实可提取，且改写后句数大幅减少，可能存在内容删减");
+    // Non-blocking warning — still publish, but surface the concern
+  }
+
+  return { finalContent: rewritten, title: article.title, usedLLM: true, factCount: facts.length };
 }
 
 // ── Helpers ──
 
-function emptyFactSet(): FactSet {
-  return {
-    scores: new Set(),
-    percentages: new Set(),
-    numbers: new Set(),
-    dates: new Set(),
-    ranks: new Set(),
-    names: new Set(),
-  };
-}
-
-function hasSameDigits(a: string, b: string): boolean {
-  const digitsA = a.replace(/\D/g, "");
-  const digitsB = b.replace(/\D/g, "");
-  return (
-    digitsA.length > 1 && digitsB.length > 1 && digitsA === digitsB && a !== b
-  );
-}
-
-function logFactSummary(facts: FactSet, content: string): void {
-  const total =
-    facts.scores.size +
-    facts.percentages.size +
-    facts.numbers.size +
-    facts.dates.size +
-    facts.ranks.size +
-    facts.names.size;
-
-  console.log(`\n=== 事实数据提取 ===`);
-  console.log(`总事实数: ${total}`);
-  if (facts.scores.size > 0)
-    console.log(`  比分: ${[...facts.scores].join(", ")}`);
-  if (facts.percentages.size > 0)
-    console.log(`  百分比: ${[...facts.percentages].join(", ")}`);
-  if (facts.numbers.size > 0)
-    console.log(`  数字: ${[...facts.numbers].join(", ")}`);
-  if (facts.dates.size > 0)
-    console.log(`  日期: ${[...facts.dates].join(", ")}`);
-  if (facts.ranks.size > 0)
-    console.log(`  排名: ${[...facts.ranks].join(", ")}`);
-  if (facts.names.size > 0) {
-    const names = [...facts.names].slice(0, 20);
-    console.log(`  名称: ${names.join(", ")}`);
-    if (facts.names.size > 20) console.log(`    ... 共${facts.names.size}个`);
-  }
-  console.log(`  原文长度: ${content.length}字`);
-  console.log(`=== 数据提取完毕 ===\n`);
-}
-
-function wrapHtml(text: string): string {
-  if (/<[hp]/.test(text)) return text;
-  return text
-    .split("\n")
-    .filter(Boolean)
-    .map((p) => `<p>${p}</p>`)
-    .join("");
-}
-
 export function formatContentLists(html: string): string {
-  // Convert "1. xxx 2. yyy 3. zzz" (in same block) to <ol><li>
-  // Pattern: number followed by dot/Chinese comma and content
   html = html.replace(
     /((?:<p>|^))((?:\d+[\.、．]\s*[^<]+)+)((?:<\/p>|$))/gm,
     (_, open, body, close) => {
@@ -486,6 +606,5 @@ export function formatContentLists(html: string): string {
       return `${open}<ol>${lis}</ol>${close}`;
     }
   );
-
   return html;
 }

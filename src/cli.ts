@@ -66,6 +66,7 @@ program
         options.content = result.finalContent;
         console.log(`标题: ${result.title}`);
         console.log(`使用 LLM: ${result.usedLLM ? "是" : "否"}`);
+        console.log(`事实校验: ${result.factCount} 条全部通过`);
         console.log(`=== 改写完成 ===\n`);
       }
 
