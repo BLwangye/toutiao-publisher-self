@@ -543,6 +543,8 @@ export interface PipelineResult {
   factCount: number;
 }
 
+const MAX_ARTICLE_LENGTH = 3000;
+
 export async function rewritePipeline(
   page: Page,
   url: string,
@@ -550,6 +552,13 @@ export async function rewritePipeline(
 ): Promise<PipelineResult> {
   // 1. Scrape
   const article = await scrapeArticle(page, url);
+
+  // 1.5 Reject overly long articles — too hard to verify
+  if (article.content.length > MAX_ARTICLE_LENGTH) {
+    throw new Error(
+      `原文过长 (${article.content.length}字, 上限${MAX_ARTICLE_LENGTH}字)，跳过。请选择更短的文章`
+    );
+  }
 
   // 2. Extract facts via DeepSeek (all categories, no exception)
   let facts: FactItem[] = [];
