@@ -43,11 +43,8 @@ export async function createSession(): Promise<BrowserSession> {
 }
 
 export async function closeSession(session: BrowserSession): Promise<void> {
-  try {
-    // Open a blank page first so Chrome doesn't exit when we close the working page
-    await session.context.newPage();
-    await session.page.close();
-  } catch {
-    // page might already be closed
-  }
+  // Note: we don't close the page here — in preview mode the user needs to
+  // see it, and in publish mode verification already completed. The Chrome
+  // process stays alive with the user's profile tabs.
+  void session;
 }
