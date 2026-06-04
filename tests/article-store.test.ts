@@ -1,6 +1,26 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import * as fs from "fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as path from "path";
+
+// ESM module namespace is not configurable, so we vi.mock fs to make
+// renameSync a controllable spy (defaults to calling through to the real impl).
+const renameMock = vi.hoisted(() => vi.fn());
+const copyMock = vi.hoisted(() => vi.fn());
+const unlinkMock = vi.hoisted(() => vi.fn());
+
+vi.mock("fs", async (importOriginal) => {
+  const mod: Record<string, unknown> = await importOriginal();
+  renameMock.mockImplementation(mod.renameSync as (...args: unknown[]) => unknown);
+  copyMock.mockImplementation(mod.copyFileSync as (...args: unknown[]) => unknown);
+  unlinkMock.mockImplementation(mod.unlinkSync as (...args: unknown[]) => unknown);
+  return {
+    ...mod,
+    renameSync: renameMock,
+    copyFileSync: copyMock,
+    unlinkSync: unlinkMock,
+  };
+});
+
+import * as fs from "fs";
 import {
   buildFilename,
   saveArticle,
@@ -162,6 +182,9 @@ describe("archiveArticle", () => {
   beforeEach(() => {
     fs.mkdirSync(pendingDir, { recursive: true });
     fs.mkdirSync(publishedDir, { recursive: true });
+    renameMock.mockClear();
+    copyMock.mockClear();
+    unlinkMock.mockClear();
   });
 
   afterEach(() => {
@@ -201,6 +224,34 @@ describe("archiveArticle", () => {
 
     await archiveArticle(filename, pendingDir, newPubDir);
     expect(fs.existsSync(path.join(newPubDir, filename))).toBe(true);
+  });
+
+  it("falls back to copy + unlink when renameSync throws EXDEV", async () => {
+    const article = makeArticle();
+    const filename = await saveArticle(article, pendingDir);
+
+    // Make renameSync throw EXDEV on next call
+    renameMock.mockImplementationOnce(() => {
+      const err: NodeJS.ErrnoException = new Error(
+        "cross-device link"
+      ) as any;
+      err.code = "EXDEV";
+      throw err;
+    });
+
+    await archiveArticle(filename, pendingDir, publishedDir);
+
+    // rename was called (and failed), fell back to copy+unlink
+    expect(renameMock).toHaveBeenCalledTimes(1);
+    expect(copyMock).toHaveBeenCalledWith(
+      path.join(pendingDir, filename),
+      path.join(publishedDir, filename)
+    );
+    expect(unlinkMock).toHaveBeenCalledWith(path.join(pendingDir, filename));
+
+    // file ended up in published
+    expect(fs.existsSync(path.join(publishedDir, filename))).toBe(true);
+    expect(fs.existsSync(path.join(pendingDir, filename))).toBe(false);
   });
 });
 

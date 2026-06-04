@@ -60,6 +60,7 @@ export async function saveArticle(
   const filename = buildFilename(article, nextIndex);
   const filePath = path.join(dir, filename);
   fs.writeFileSync(filePath, JSON.stringify(article, null, 2), "utf-8");
+  console.log(`已保存: ${filename}`);
   return filename;
 }
 
@@ -67,23 +68,26 @@ export async function loadPendingArticles(
   pendingDir?: string
 ): Promise<{ filename: string; article: PendingArticle }[]> {
   const dir = pendingDir ?? defaultPendingDir();
-  const results: { filename: string; article: PendingArticle }[] = [];
 
+  let files: string[];
   try {
-    const files = fs
-      .readdirSync(dir)
-      .filter((f) => f.endsWith(".json"))
-      .sort();
-    for (const file of files) {
-      const filePath = path.join(dir, file);
-      const content = fs.readFileSync(filePath, "utf-8");
-      const article = JSON.parse(content) as PendingArticle;
-      results.push({ filename: file, article });
-    }
-  } catch {
-    // Directory doesn't exist — return empty array
+    files = fs.readdirSync(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
   }
 
+  const jsonFiles = files.filter(f => f.endsWith(".json")).sort();
+  const results: { filename: string; article: PendingArticle }[] = [];
+  for (const filename of jsonFiles) {
+    try {
+      const raw = fs.readFileSync(path.join(dir, filename), "utf-8");
+      const article = JSON.parse(raw) as PendingArticle;
+      results.push({ filename, article });
+    } catch (err) {
+      console.error(`⚠ 跳过损坏文件: ${filename} — ${(err as Error).message}`);
+    }
+  }
   return results;
 }
 
@@ -95,28 +99,51 @@ export async function archiveArticle(
   const srcDir = pendingDir ?? defaultPendingDir();
   const dstDir = publishedDir ?? defaultPublishedDir();
   fs.mkdirSync(dstDir, { recursive: true });
-  fs.renameSync(path.join(srcDir, filename), path.join(dstDir, filename));
+
+  const src = path.join(srcDir, filename);
+  if (!fs.existsSync(src)) {
+    throw new Error(`File not found: ${src}`);
+  }
+  const dest = path.join(dstDir, filename);
+
+  try {
+    fs.renameSync(src, dest);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
+      // Cross-device — copy then delete
+      fs.copyFileSync(src, dest);
+      fs.unlinkSync(src);
+    } else {
+      throw err;
+    }
+  }
+
+  console.log(`已归档: ${filename}`);
 }
 
 export async function getPublishedSourceUrls(
   publishedDir?: string
 ): Promise<Set<string>> {
   const dir = publishedDir ?? defaultPublishedDir();
-  const urls = new Set<string>();
 
+  let files: string[];
   try {
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
-    for (const file of files) {
-      const filePath = path.join(dir, file);
-      const content = fs.readFileSync(filePath, "utf-8");
-      const article = JSON.parse(content) as PendingArticle;
-      if (article.source_url) {
-        urls.add(article.source_url);
-      }
-    }
-  } catch {
-    // Directory doesn't exist — return empty set
+    files = fs.readdirSync(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return new Set();
+    throw err;
   }
 
+  const urls = new Set<string>();
+  for (const filename of files) {
+    if (!filename.endsWith(".json")) continue;
+    try {
+      const raw = fs.readFileSync(path.join(dir, filename), "utf-8");
+      const article = JSON.parse(raw) as PendingArticle;
+      if (article.source_url) urls.add(article.source_url);
+    } catch (err) {
+      console.error(`⚠ 跳过损坏文件: ${filename} — ${(err as Error).message}`);
+    }
+  }
   return urls;
 }
