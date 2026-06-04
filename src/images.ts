@@ -56,11 +56,17 @@ export async function setCoverFile(page: Page, imagePath: string): Promise<void>
 
   await fileChooser.setFiles(imagePath);
   console.log("封面文件已选择，等待上传...");
-  await page.waitForTimeout(3000);
 
-  // Step 5: Click "确定" to confirm
+  // Step 5: Click "确定" to confirm — wait for upload to finish (button enabled)
   const confirmBtn = page.locator(".byte-drawer button", { hasText: "确定" }).last();
   await confirmBtn.waitFor({ state: "visible", timeout: 10000 });
+  // Wait until the button becomes enabled (upload complete)
+  await page.waitForTimeout(1000);
+  for (let i = 0; i < 30; i++) {
+    const disabled = await confirmBtn.isDisabled().catch(() => true);
+    if (!disabled) break;
+    await page.waitForTimeout(1000);
+  }
   await confirmBtn.click();
   await page.waitForTimeout(2000);
 

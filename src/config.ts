@@ -1,8 +1,8 @@
 export const CONFIG = {
   PUBLISH_URL: "https://mp.toutiao.com/profile_v4/graphic/publish",
   LOGIN_URL: "https://mp.toutiao.com",
-  DEFAULT_TIMEOUT: 30_000,
-  AI_LOAD_TIMEOUT: 50_000,
+  DEFAULT_TIMEOUT: 15_000,
+  AI_LOAD_TIMEOUT: 30_000,
   PUBLISH_RETRY: 3,
   PUBLISH_RETRY_INTERVAL: 2_000,
   CHROME_PATH: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",

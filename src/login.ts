@@ -21,7 +21,7 @@ export async function ensureLogin(page: Page): Promise<boolean> {
         if (url.href.includes(pattern)) return true;
       }
       return false;
-    }, { timeout: 120_000 });
+    }, { timeout: 30_000 });
 
     console.log("登录成功");
     return true;

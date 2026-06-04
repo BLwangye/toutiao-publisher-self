@@ -167,8 +167,6 @@ export async function insertTopics(page: Page, topics: string[]): Promise<number
   if (topics.length === 0) return 0;
 
   const editor = page.locator(SELECTORS.EDITOR);
-
-  // Focus editor and ensure ProseMirror is in input mode
   await editor.click();
   await page.waitForTimeout(500);
 
@@ -186,17 +184,22 @@ export async function insertTopics(page: Page, topics: string[]): Promise<number
   });
   await page.waitForTimeout(300);
 
-  let inserted = 0;
-  for (let i = 0; i < topics.length; i++) {
-    const topic = topics[i];
+  // Start on new line
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(500);
 
-    // New paragraph before first topic
-    if (i === 0) {
-      await page.keyboard.press("Enter");
-      await page.waitForTimeout(500);
+  let inserted = 0;
+  let needSpace = false;
+
+  for (const topic of topics) {
+    if (inserted >= 5) break; // max 5 topics
+
+    if (needSpace) {
+      await page.keyboard.press("Space");
+      await page.waitForTimeout(200);
     }
 
-    // Type # to trigger topic autocomplete, then the topic name
+    // Type # + keyword
     await page.keyboard.press("#");
     await page.waitForTimeout(300);
     await page.keyboard.type(topic, { delay: 50 });
@@ -204,31 +207,42 @@ export async function insertTopics(page: Page, topics: string[]): Promise<number
 
     // Look for the mention selector popup
     const popup = page.locator(".mention-selector-modal").first();
+    let matched = false;
     try {
       await popup.waitFor({ state: "visible", timeout: 3000 });
-
-      // Click the first matching topic item
       const firstItem = popup.locator(".forum-list-item").first();
       await firstItem.waitFor({ state: "visible", timeout: 2000 });
       await firstItem.click();
       await page.waitForTimeout(800);
       inserted++;
+      needSpace = true;
+      matched = true;
       console.log(`  话题已选中: #${topic}`);
     } catch {
-      // If popup didn't appear, try pressing Enter as fallback
-      await page.keyboard.press("Enter");
-      await page.waitForTimeout(300);
-      console.log(`  话题弹窗未出现, 保留文本: #${topic}`);
-    }
-
-    // Space to separate topics
-    if (i < topics.length - 1) {
-      await page.keyboard.press("Space");
-      await page.waitForTimeout(300);
+      // No match — remove the failed #keyword paragraph
+      console.log(`  话题无匹配: #${topic}，尝试下一个`);
+      await page.evaluate(() => {
+        const pm = document.querySelector(".ProseMirror");
+        if (!pm) return;
+        // Find and remove the last child if it starts with #
+        const children = pm.children;
+        const last = children[children.length - 1] as HTMLElement;
+        if (last && last.textContent?.startsWith("#")) {
+          last.remove();
+        }
+      });
+      await page.waitForTimeout(200);
+      needSpace = false;
     }
   }
 
-  // Dispatch input event
+  // Clean up: if no topics inserted, remove the leading Enter we added
+  if (inserted === 0) {
+    await page.keyboard.press("Backspace");
+    await page.waitForTimeout(200);
+  }
+
+  // Dispatch change event
   await editor.evaluate((el) => {
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -237,4 +251,71 @@ export async function insertTopics(page: Page, topics: string[]): Promise<number
 
   console.log(`话题插入完成: ${inserted}/${topics.length} 个选中`);
   return inserted;
+}
+
+// Insert an image after the Nth h2 heading in the editor.
+// Uses Range API to position cursor precisely after the h2 element.
+export async function insertImageAfterH2(page: Page, imagePath: string, h2Index: number): Promise<void> {
+  const buffer = fs.readFileSync(imagePath);
+  const base64 = buffer.toString("base64");
+  const ext = imagePath.split(".").pop()?.toLowerCase() ?? "png";
+  const mimeMap: Record<string, string> = {
+    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp",
+  };
+  const mime = mimeMap[ext] ?? "image/png";
+  const dataUri = `data:${mime};base64,${base64}`;
+
+  // Use Range API to position cursor right after the target h2
+  const positioned = await page.evaluate((idx) => {
+    const pm = document.querySelector(".ProseMirror");
+    if (!pm) return false;
+    const h2s = pm.querySelectorAll("h2");
+    if (h2s.length <= idx) return false;
+
+    const target = h2s[idx];
+    const sel = window.getSelection();
+    if (!sel) return false;
+    const range = document.createRange();
+    // Set range right after the h2 element
+    range.setStartAfter(target);
+    range.setEndAfter(target);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
+  }, h2Index);
+
+  if (!positioned) {
+    // Fallback: move to very end of editor
+    await page.evaluate(() => {
+      const pm = document.querySelector(".ProseMirror");
+      if (!pm) return;
+      const sel = window.getSelection();
+      if (!sel) return;
+      const range = document.createRange();
+      range.selectNodeContents(pm);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
+  }
+  await page.waitForTimeout(200);
+
+  // Press Enter to create space, then paste image
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+
+  await page.evaluate((uri) => {
+    const editor = document.querySelector(".ProseMirror");
+    if (!editor) return;
+    const dt = new DataTransfer();
+    dt.setData("text/html", `<img src="${uri}" style="max-width:100%"/>`);
+    editor.dispatchEvent(new ClipboardEvent("paste", {
+      clipboardData: dt, bubbles: true, cancelable: true,
+    }));
+  }, dataUri);
+  await page.waitForTimeout(500);
+
+  await page.evaluate(() => {
+    document.querySelector(".ProseMirror")?.dispatchEvent(new Event("input", { bubbles: true }));
+  });
 }

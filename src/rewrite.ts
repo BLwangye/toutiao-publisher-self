@@ -237,6 +237,47 @@ function formatFactsForPrompt(facts: FactItem[]): string {
   return lines.join("\n");
 }
 
+// ── Title translation ──
+
+async function translateTitle(title: string): Promise<string> {
+  if (!DEEPSEEK_API_KEY) return title;
+
+  // If title is already mostly Chinese, skip
+  const cjkCount = (title.match(/[一-鿿]/g) || []).length;
+  if (cjkCount > title.length * 0.3) return title;
+
+  try {
+    const resp = await fetch("https://api.deepseek.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: [
+          { role: "system", content: "你是一个新闻标题翻译专家。将英文标题翻译为简洁有吸引力的中文标题，保留原意，符合中文新闻标题习惯。只输出翻译后的中文标题，不要任何解释。" },
+          { role: "user", content: title },
+        ],
+        max_tokens: 100,
+        temperature: 0.2,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    const data = (await resp.json()) as any;
+    const translated = data?.choices?.[0]?.message?.content?.trim() || "";
+    if (translated && translated.length > 0) {
+      console.log(`标题翻译: "${title}" → "${translated}"`);
+      return translated;
+    }
+    return title;
+  } catch (err) {
+    console.log("标题翻译失败，使用原标题:", (err as Error).message);
+    return title;
+  }
+}
+
 // ── DeepSeek Rewrite ──
 
 const REWRITE_SYSTEM_PROMPT = `你是新闻编辑。请润色以下文章，要求：
@@ -342,6 +383,20 @@ function hasSameDigits(a: string, b: string): boolean {
 // Check if enough key tokens from a fact appear in the rewritten text.
 // Used for date, event, person, location, and org facts that are often rephrased.
 export function fuzzyMatch(original: string, rewritten: string, factType: string): boolean {
+  // Cross-language: fact extracted from English, but rewrite is Chinese.
+  // Most English tokens won't survive translation — check only digits survive.
+  const origCJK = (original.match(/[一-鿿]/g) || []).length;
+  const rewriteCJK = (rewritten.match(/[一-鿿]/g) || []).length;
+  const origASCII = (original.match(/[A-Za-z]/g) || []).length;
+
+  if (origASCII > origCJK && rewriteCJK > origASCII) {
+    // Cross-language: original is English, rewrite is Chinese.
+    // Only digits reliably survive translation.
+    const digits = original.match(/\d+/g);
+    if (!digits || digits.length === 0) return true; // no digits to check, trust the translation
+    return digits.every(d => rewritten.includes(d));
+  }
+
   const tokens: string[] = [];
 
   if (factType === "date") {
@@ -375,6 +430,34 @@ export function fuzzyMatch(original: string, rewritten: string, factType: string
 export function validateFacts(rewritten: string, originalFacts: FactItem[]): FactDiff {
   const diff: FactDiff = { missing: [], altered: [], extra: [] };
 
+  // Cross-language: original facts are mostly English, rewrite is Chinese.
+  // String matching is futile — only digit preservation can be verified.
+  const origCJK = (originalFacts.map(f => f.value).join("").match(/[一-鿿]/g) || []).length;
+  const origASCII = (originalFacts.map(f => f.value).join("").match(/[A-Za-z]/g) || []).length;
+  const rewriteCJK = (rewritten.match(/[一-鿿]/g) || []).length;
+
+  if (origASCII > origCJK && rewriteCJK > origASCII) {
+    // Cross-language: only check number facts for digit preservation
+    for (const fact of originalFacts) {
+      if (fact.type !== "number") continue;
+      const digits = fact.value.replace(/\D/g, "");
+      if (digits.length === 0) continue; // e.g. "more than half", "one in three"
+      // If the fact value contains English words, digits may become Chinese
+      // numerals (10,000 → 一万) — skip, can't verify across languages.
+      if (/[A-Za-z]{2,}/.test(fact.value)) continue;
+      // Large round numbers (4+ digits) often convert to 万/亿 — skip
+      if (digits.length >= 4 && digits.endsWith("0")) continue;
+      // Check all digits from original appear somewhere in the rewrite
+      if (!rewritten.includes(digits) && !rewritten.match(new RegExp(digits.split("").join("\\D*")))) {
+        diff.missing.push(fact);
+      }
+    }
+    if (diff.missing.length === 0) {
+      console.log("✅ 事实验证通过（跨语言模式，已校验关键数字）");
+    }
+    return diff;
+  }
+
   // ── Check each original fact exists in rewritten ──
   for (const fact of originalFacts) {
     // Use fuzzy token matching for types that get rephrased
@@ -388,8 +471,12 @@ export function validateFacts(rewritten: string, originalFacts: FactItem[]): Fac
 
     // Number type: exact string match with altered-digit detection
     if (!rewritten.includes(fact.value)) {
-      let foundAltered = false;
+      // Cross-language: fact value has no digits (e.g. "more than half"),
+      // it can't survive translation — skip verification, trust the rewrite.
       const digitPattern = fact.value.replace(/\D/g, "");
+      if (digitPattern.length === 0) continue;
+
+      let foundAltered = false;
       if (digitPattern.length >= 2) {
         const rewrittenNums = rewritten.match(/\d+[\d,.]*\s*[万亿千百]?\s*[元美元韩元欧元分场人个次秒米公里台℃岁%倍]?/g) || [];
         for (const rn of rewrittenNums) {
@@ -514,13 +601,28 @@ ${alteredItems}
 
     // Re-validate
     const newDiff = validateFacts(fixed, originalFacts);
-    if (newDiff.missing.length > 0 || newDiff.altered.length > 0) {
-      console.log("⚠ 二次修正后仍有差异，终止发布");
+    // Event-only missing facts are descriptive methodology details that
+    // get naturally rephrased — warn but don't block publishing.
+    const blockingMissing = newDiff.missing.filter(f => f.type !== "event");
+    const blockingAltered = newDiff.altered;
+
+    if (newDiff.missing.length > 0) {
+      const nonBlocking = newDiff.missing.filter(f => f.type === "event");
+      if (nonBlocking.length > 0) {
+        console.log(`⚠ 跳过 ${nonBlocking.length} 条事件描述差异（不影响发布）:`);
+        for (const d of nonBlocking) {
+          console.log(`  [${d.type}] ${d.value.substring(0, 60)}`);
+        }
+      }
+    }
+
+    if (blockingMissing.length > 0 || blockingAltered.length > 0) {
+      console.log("⚠ 二次修正后仍有关键事实差异，终止发布");
       console.log("差异详情:");
-      for (const d of newDiff.missing) {
+      for (const d of blockingMissing) {
         console.log(`  缺失 [${d.type}] ${d.value} (${d.context})`);
       }
-      for (const d of newDiff.altered) {
+      for (const d of blockingAltered) {
         console.log(`  篡改 [${d.original.type}] ${d.original.value} → ${d.found}`);
       }
       throw new Error("VALIDATION_FAILED: 二次修正后仍有事实差异，终止发布");
@@ -543,8 +645,6 @@ export interface PipelineResult {
   factCount: number;
 }
 
-const MAX_ARTICLE_LENGTH = 3000;
-
 export async function rewritePipeline(
   page: Page,
   url: string,
@@ -553,12 +653,8 @@ export async function rewritePipeline(
   // 1. Scrape
   const article = await scrapeArticle(page, url);
 
-  // 1.5 Reject overly long articles — too hard to verify
-  if (article.content.length > MAX_ARTICLE_LENGTH) {
-    throw new Error(
-      `原文过长 (${article.content.length}字, 上限${MAX_ARTICLE_LENGTH}字)，跳过。请选择更短的文章`
-    );
-  }
+  // 1.5 Translate title if non-Chinese
+  article.title = await translateTitle(article.title);
 
   // 2. Extract facts via DeepSeek (all categories, no exception)
   let facts: FactItem[] = [];

@@ -1,15 +1,13 @@
 import { Command } from "commander";
-import * as fs from "fs";
 import { createSession, closeSession } from "./browser.js";
 import { ensureLogin } from "./login.js";
 import { typeTitle, insertContent, insertTopics } from "./editor.js";
-import { setCoverFile } from "./images.js";
-import { generateImage, downloadImages } from "./jimeng.js";
 import { interactArticles } from "./interact.js";
 import { setDeclarations, publishArticle } from "./publish.js";
-import { detectCategory, formatTitle } from "./category.js";
-import { extractTopics, formatTopics } from "./topics.js";
+import { detectCategory, formatTitle, CATEGORY_KEYWORDS } from "./category.js";
+import { extractTopics, formatTopics, generateTopicsViaDeepSeek } from "./topics.js";
 import { rewritePipeline, formatContentLists } from "./rewrite.js";
+import { detectSuggestions, clickSuggestionImage } from "./suggestions.js";
 import { CONFIG } from "./config.js";
 
 const program = new Command();
@@ -94,134 +92,135 @@ program
       // Step 4: Type title
       await typeTitle(session.page, displayTitle);
 
-      // Generate images before inserting content
-      let imagePaths: string[] = [];
-      let coverPath = "";
-
-      if (options.images && (options.imageKeyword || options.reuseImages || options.imageFiles)) {
-        if (options.imageFiles) {
-          imagePaths = options.imageFiles.split(",").map((f: string) => f.trim()).filter(Boolean);
-          console.log(`使用指定图片: ${imagePaths.length} 张`);
-        } else if (options.reuseImages) {
-          const imageDir = "images";
-          const count = parseInt(options.imageCount || "3");
-          // Collect images from all subdirectories, sort by time
-          const allFiles: string[] = [];
-          const dirs = [imageDir, ...fs.readdirSync(imageDir).filter(d => fs.statSync(`images/${d}`).isDirectory()).map(d => `images/${d}`)];
-          for (const dir of dirs) {
-            try {
-              for (const f of fs.readdirSync(dir)) {
-                if (f.endsWith(".png") || f.endsWith(".jpg")) {
-                  allFiles.push(`${dir}/${f}`);
-                }
-              }
-            } catch { /* skip inaccessible dirs */ }
-          }
-          imagePaths = allFiles
-            .sort()
-            .reverse()
-            .slice(0, count);
-          console.log(`复用 ${imagePaths.length} 张已有图片`);
-        } else {
-          const keywords = options.imageKeyword.split(",").map((k: string) => k.trim()).filter(Boolean);
-          console.log(`正在生成 ${keywords.length} 张配图: ${keywords.join(" | ")}`);
-
-          for (const kw of keywords) {
-            const urls = await generateImage({ prompt: kw });
-            console.log(`  关键词"${kw}"生成了 ${urls.length} 张`);
-            const paths = await downloadImages(urls, kw, options.imageCategory);
-            imagePaths.push(...paths);
-          }
-          console.log(`${imagePaths.length} 张图片已就绪`);
-        }
-
-        if (imagePaths.length > 0) coverPath = imagePaths[0];
-      }
-
-      // Step 4: Set cover BEFORE content (use no-cover if cover upload isn't needed)
-      if (coverPath) {
-        console.log("使用第一张配图作为封面");
-        try {
-          await setCoverFile(session.page, coverPath);
-        } catch (err) {
-          console.log("封面自动设置失败，使用无封面:", (err as Error).message);
-          const noCoverLabel = session.page.locator("label", { hasText: "无封面" }).first();
-          await noCoverLabel.click({ force: true });
-        }
-      } else if (!options.images) {
-        const noCoverLabel = session.page.locator("label", { hasText: "无封面" }).first();
-        await noCoverLabel.click({ force: true });
-        console.log("已选择无封面");
-      }
-
-      // Step 5: Extract topics (will insert after content via editor)
-      let contentHtml = options.content;
-      let topicLabels: string[] = [];
-      if (options.topics) {
-        topicLabels = extractTopics(options.content, category ?? null);
-        if (topicLabels.length > 0) {
-          console.log(`话题标签: ${formatTopics(topicLabels)}`);
-        } else {
-          console.log("未检测到话题关键词");
-        }
-      }
-
-      // Step 6: Format lists then insert content
-      contentHtml = formatContentLists(contentHtml);
+      // Step 5: Insert content
+      let contentHtml = formatContentLists(options.content);
       await insertContent(session.page, contentHtml);
 
-      // Step 6b: Insert topics via keyboard (triggers ProseMirror topic autocomplete)
-      if (topicLabels.length > 0) {
-        await insertTopics(session.page, topicLabels);
-      }
-
-      // Step 7: Paste images after each h1
-      if (imagePaths.length > 0) {
-        console.log("正在插入配图...");
-        const uris = imagePaths.map(p => {
-          const buf = fs.readFileSync(p);
-          const ext = p.split(".").pop()?.toLowerCase() ?? "png";
-          const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : "image/png";
-          return `data:${mime};base64,${buf.toString("base64")}`;
-        });
-
-        const hCount = await session.page.evaluate(() => document.querySelectorAll(".ProseMirror h1").length);
-        const pasteCount = Math.min(hCount, uris.length);
-
-        for (let i = 0; i < pasteCount; i++) {
-          // Triple-click the h1 to select it, then right arrow to go to end
-          const h1 = session.page.locator(`.ProseMirror h1 >> nth=${i}`);
-          await h1.click({ clickCount: 3 });  // select all text in h1
-          await session.page.keyboard.press("ArrowRight");  // move cursor to end
-          await session.page.keyboard.press("Enter");      // new line after h1
-          await session.page.waitForTimeout(200);
-
-          await session.page.evaluate((uri) => {
-            const editor = document.querySelector(".ProseMirror");
-            if (!editor) return;
-            const dt = new DataTransfer();
-            dt.setData("text/html", `<img src="${uri}" style="max-width:100%"/>`);
-            editor.dispatchEvent(new ClipboardEvent("paste", {
-              clipboardData: dt,
-              bubbles: true,
-              cancelable: true,
-            }));
-          }, uris[i]);
-          await session.page.waitForTimeout(300);
+      // Step 6: Get suggested images from 头条内容建议 (if --no-images)
+      let bodyImageCount = 0;
+      if (!options.images) {
+        const suggestion = await detectSuggestions(session.page);
+        if (suggestion.imageCount === 0) {
+          console.log("无建议配图");
         }
 
-        await session.page.evaluate(() => {
-          document.querySelector(".ProseMirror")?.dispatchEvent(new Event("input", { bubbles: true }));
+        // Smart image placement based on heading count (ProseMirror: h2→h1)
+        const headingCount = await session.page.evaluate(() => {
+          const pm = document.querySelector(".ProseMirror");
+          if (!pm) return 0;
+          const h1 = pm.querySelectorAll("h1").length;
+          const h2 = pm.querySelectorAll("h2").length;
+          return Math.max(h1, h2);
         });
+        console.log(`  编辑器标题数: ${headingCount}`);
 
-        console.log(`${pasteCount} 张图片已插入正文`);
-      } else if (!options.images) {
+        // Decide insertion plan: [end] or [before heading N]
+        type InsertPlan = { position: "end" } | { position: "beforeHeading"; headingIdx: number };
+        const plans: InsertPlan[] = [];
+        if (headingCount >= 3) {
+          // 3+ headings: 2 images, before 2nd and 3rd headings
+          plans.push({ position: "beforeHeading", headingIdx: 1 });
+          plans.push({ position: "beforeHeading", headingIdx: 2 });
+        } else if (headingCount === 2) {
+          // 2 headings: 1 image before 2nd heading
+          plans.push({ position: "beforeHeading", headingIdx: 1 });
+        } else {
+          // 0-1 headings: 1 image at end of article
+          plans.push({ position: "end" });
+        }
+
+        for (let i = 0; i < plans.length; i++) {
+          const plan = plans[i];
+          if (plan.position === "end") {
+            console.log("在正文末尾插入配图...");
+            await session.page.evaluate(() => {
+              const pm = document.querySelector(".ProseMirror");
+              if (!pm) return;
+              const sel = window.getSelection();
+              if (!sel) return;
+              const range = document.createRange();
+              range.selectNodeContents(pm);
+              range.collapse(false);
+              sel.removeAllRanges();
+              sel.addRange(range);
+            });
+            await session.page.waitForTimeout(200);
+            await session.page.keyboard.press("Enter");
+            await session.page.waitForTimeout(300);
+          } else {
+            console.log(`在第 ${plan.headingIdx + 1} 个标题前插入配图...`);
+            const placed = await session.page.evaluate((hIdx) => {
+              const pm = document.querySelector(".ProseMirror");
+              if (!pm) return false;
+              let headings = pm.querySelectorAll("h1");
+              if (headings.length <= hIdx) headings = pm.querySelectorAll("h2");
+              if (headings.length <= hIdx) return false;
+              const prev = headings[hIdx].previousElementSibling;
+              if (!prev) return false;
+              const sel = window.getSelection();
+              if (!sel) return false;
+              const range = document.createRange();
+              range.selectNodeContents(prev);
+              range.collapse(false);
+              sel.removeAllRanges();
+              sel.addRange(range);
+              return true;
+            }, plan.headingIdx);
+
+            if (!placed) { console.log(`  找不到位置，跳过`); continue; }
+            await session.page.waitForTimeout(200);
+            await session.page.keyboard.press("Enter");
+            await session.page.waitForTimeout(300);
+          }
+
+          const ok = await clickSuggestionImage(session.page, i);
+          if (ok) { bodyImageCount++; console.log(`  插入成功`); }
+          else { console.log(`  插入失败`); }
+        }
+        if (bodyImageCount > 0) console.log(`${bodyImageCount} 张配图已插入正文`);
+      }
+
+      // Step 7: Topics — DeepSeek generates candidates, #-search, failed ones removed
+      let topicLabels = await generateTopicsViaDeepSeek(options.content, options.title);
+      if (topicLabels.length < 3) {
+        // Pad with keyword matching fallbacks
+        const fallbacks = extractTopics(options.content, category ?? null);
+        for (const f of fallbacks) {
+          if (!topicLabels.includes(f)) topicLabels.push(f);
+        }
+      }
+      if (topicLabels.length > 0) {
+        console.log(`话题候选 (${topicLabels.length}): ${formatTopics(topicLabels)}`);
+        const inserted = await insertTopics(session.page, topicLabels);
+        if (inserted < 3) {
+          console.log(`仅匹配 ${inserted} 个话题，尝试补充...`);
+          // Try category keywords as extra fallback
+          const extras = (CATEGORY_KEYWORDS[category ?? "健康"] || [])
+            .filter(kw => !topicLabels.includes(kw))
+            .slice(0, 5);
+          if (extras.length > 0) {
+            await insertTopics(session.page, extras);
+          }
+        }
+      } else {
+        console.log("未检测到话题关键词");
+      }
+
+      // Step 8: Cover — select "单图", first body image becomes cover
+      if (bodyImageCount > 0) {
+        console.log("选择单图封面...");
+        const singleLabel = session.page.locator("label", { hasText: "单图" }).first();
+        await singleLabel.scrollIntoViewIfNeeded();
+        await singleLabel.click({ force: true });
+        await session.page.waitForTimeout(2000);
+        console.log("已选择单图封面（默认使用正文第一张配图）");
+      } else {
         const noCoverLabel = session.page.locator("label", { hasText: "无封面" }).first();
         await noCoverLabel.click({ force: true });
         console.log("已选择无封面");
       }
 
-      // Step 7: Declarations
+      // Step 9: Declarations
       if (options.declarations) {
         await setDeclarations(session.page);
       }

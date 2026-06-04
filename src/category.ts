@@ -41,6 +41,9 @@ export const CATEGORY_KEYWORDS: Record<string, string[]> = {
     "养生", "癌症", "疫苗", "中医", "西医", "体检", "减肥", "睡眠",
     "抑郁", "心理", "糖尿病", "高血压", "心脏病", "颈椎", "腰椎",
     "近视", "脱发", "痛风", "过敏", "免疫力", "三高", "猝死",
+    "长寿", "衰老", "百岁", "痴呆", "阿尔茨海默", "大脑", "记忆力",
+    "营养素", "心血管", "中风", "炎症", "抗氧化", "肠道", "益生菌",
+    "饮食模式", "地中海饮食", "衰老细胞", "抗衰老", "端粒",
   ],
   "教育": [
     "高考", "中考", "考研", "留学", "学区", "大学", "中小学", "考试",
@@ -104,19 +107,13 @@ export function detectCategory(title: string, content?: string): Category | null
   return best;
 }
 
-const MAX_TITLE_LENGTH = 30;
+const MAX_TITLE_LENGTH = 35;
 
 export function formatTitle(title: string, category: Category | null): string {
-  if (!category) return truncate(title, MAX_TITLE_LENGTH);
-
-  const prefix = `${category}> `;
-  const prefixLen = [...prefix].length;
-
-  // Recurse: format without category first, then prepend prefix
-  const innerMax = MAX_TITLE_LENGTH - prefixLen;
-  if (innerMax <= 0) return prefix;
-
-  return prefix + truncate(title, innerMax);
+  // Truncate title portion only, then prepend prefix
+  const truncated = truncate(title, MAX_TITLE_LENGTH);
+  if (!category) return truncated;
+  return `${category}> ${truncated}`;
 }
 
 function truncate(text: string, maxLen: number): string {
