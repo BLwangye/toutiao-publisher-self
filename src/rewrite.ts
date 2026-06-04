@@ -49,6 +49,48 @@ interface FactDiff {
   extra: FactItem[];
 }
 
+// ── Narrative Angles ──
+
+export type NarrativeAngle = "event" | "why" | "impact" | "debate";
+
+export interface AngleDefinition {
+  key: NarrativeAngle;
+  label: string;
+  instruction: string;
+}
+
+export const NARRATIVE_ANGLES: AngleDefinition[] = [
+  {
+    key: "event",
+    label: "事件梳理型",
+    instruction: `按时间线梳理事件的起因、经过、结果。让读者快速了解"发生了什么"，重点突出关键转折点和最新进展。`,
+  },
+  {
+    key: "why",
+    label: "追问解读型",
+    instruction: `聚焦事件背后的原因和逻辑。回答"为什么会发生"，挖掘深层背景、利益关系、制度因素。引导读者理解事件本质。`,
+  },
+  {
+    key: "impact",
+    label: "影响分析型",
+    instruction: `分析事件对普通人的切身影响。回答"这意味着什么"，说明后续可能的变化、涉及的人群、应对策略。让读者觉得"这事和我有关"。`,
+  },
+  {
+    key: "debate",
+    label: "争议展示型",
+    instruction: `客观呈现围绕事件的各方观点。分别列出支持和反对的理由，不断然下结论。让读者了解全貌后自行判断。避免偏袒任何一方。`,
+  },
+];
+
+export function getAngleDefinition(angle?: NarrativeAngle): AngleDefinition {
+  const found = NARRATIVE_ANGLES.find(a => a.key === angle);
+  return found ?? NARRATIVE_ANGLES[0]; // default to "event"
+}
+
+export function randomAngle(): NarrativeAngle {
+  return NARRATIVE_ANGLES[Math.floor(Math.random() * NARRATIVE_ANGLES.length)].key;
+}
+
 // ── Scrape ──
 
 export async function scrapeArticle(
@@ -280,24 +322,41 @@ async function translateTitle(title: string): Promise<string> {
 
 // ── DeepSeek Rewrite ──
 
-const REWRITE_SYSTEM_PROMPT = `你是新闻编辑。请润色以下文章，要求：
-1. 只优化语言表达和段落结构
-2. 严禁修改任何数据：数字、百分比、金额、统计数字
-3. 严禁修改或替换任何人名、地名、机构名、专有名词
-4. 严禁增删任何事实信息，严禁虚构数据
-5. 可以调整句式、去掉冗余、让表达更流畅
-6. 输出格式为 HTML（用 <h2> 做小标题，<p> 做段落，<ol><li> 做有序列表，<ul><li> 做无序列表），不要用代码块包裹
-7. 适当使用 <strong> 加粗关键数据、核心观点、重要结论
-8. 每个 <h2> 标题前可搭配 1 个合适的 emoji（全文 2-4 个即可，克制使用）`;
+function buildRewriteSystemPrompt(angle?: NarrativeAngle): string {
+  const def = getAngleDefinition(angle);
 
-async function rewriteViaDeepSeek(
+  return `你是新闻编辑。请按以下叙事角度重写这篇文章。
+
+【角度：${def.label}】
+${def.instruction}
+
+【规则】
+1. 全文 600-900 字，简洁有力
+2. 输出 HTML 格式：<h2> 做小标题（搭配 1 个 emoji），<p> 做段落，<ol>/<ul> 做列表
+3. <strong> 加粗关键数据、核心结论
+4. 严禁修改任何数字、百分比、人名、地名、机构名、专有名词
+5. 严禁虚构数据、增删事实
+6. 不要用"这篇文章""作者认为"等套话
+7. 改写后，在文章末尾单独一行输出 3 个备选标题（每行一个），格式为：
+【备选标题】
+标题1
+标题2
+标题3`;
+}
+
+export interface RewriteResult {
+  content: string;
+  suggestedTitles: string[];
+}
+
+async function rewriteWithAngle(
   title: string,
   content: string,
-  facts: FactItem[]
-): Promise<string | null> {
+  facts: FactItem[],
+  angle?: NarrativeAngle
+): Promise<RewriteResult> {
   if (!DEEPSEEK_API_KEY) {
-    console.log("未配置 DeepSeek API Key，跳过改写");
-    return null;
+    throw new Error("未配置 DeepSeek API Key");
   }
 
   const factsBlock = formatFactsForPrompt(facts);
@@ -305,12 +364,9 @@ async function rewriteViaDeepSeek(
     ? `\n\n【关键事实清单 — 严禁修改或删除以下任何内容】\n${factsBlock}\n`
     : "";
 
-  const userPrompt = `标题：${title}
+  const userPrompt = `标题：${title}\n\n原文：\n${content.substring(0, 4000)}${factsConstraint}`;
 
-原文：
-${content.substring(0, 4000)}${factsConstraint}`;
-
-  const makeRequest = async (): Promise<string | null> => {
+  const makeRequest = async (): Promise<RewriteResult> => {
     const resp = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -320,7 +376,7 @@ ${content.substring(0, 4000)}${factsConstraint}`;
       body: JSON.stringify({
         model: "deepseek-chat",
         messages: [
-          { role: "system", content: REWRITE_SYSTEM_PROMPT },
+          { role: "system", content: buildRewriteSystemPrompt(angle) },
           { role: "user", content: userPrompt },
         ],
         max_tokens: 4000,
@@ -331,24 +387,45 @@ ${content.substring(0, 4000)}${factsConstraint}`;
 
     const data = (await resp.json()) as any;
     const text = data?.choices?.[0]?.message?.content?.trim() || "";
-    if (!text) {
-      console.log("DeepSeek 返回空内容");
-      return null;
+    if (!text) throw new Error("DeepSeek 返回空内容");
+
+    // Extract suggested titles
+    let contentBody = text;
+    let suggestedTitles: string[] = [];
+    const titleMatch = text.match(/【备选标题】\s*\n([\s\S]*)$/);
+    if (titleMatch) {
+      contentBody = text.replace(/【备选标题】[\s\S]*$/, "").trim();
+      suggestedTitles = titleMatch[1]
+        .split("\n")
+        .map((s: string) => s.replace(/^[\d\.\s、]+/, "").trim())
+        .filter(Boolean);
     }
-    return text;
+
+    return { content: contentBody, suggestedTitles };
   };
 
   try {
-    const rewritten = await withRetry(makeRequest, 2);
-    if (rewritten) {
-      console.log(`DeepSeek 改写完成 (${rewritten.length}字)`);
-      return rewritten;
-    }
-    console.error("DeepSeek 改写返回空内容，终止");
-    throw new Error("REWRITE_FAILED: DeepSeek 改写失败，终止发布");
+    const result = await withRetry(makeRequest, 2);
+    console.log(`DeepSeek 改写完成 (${result.content.length}字), ${result.suggestedTitles.length} 个备选标题`);
+    return result;
   } catch (err) {
     console.error("改写失败:", (err as Error).message);
     throw new Error("REWRITE_FAILED: DeepSeek 改写失败，终止发布");
+  }
+}
+
+// Keep old function signature for backward compat with rewritePipeline
+async function rewriteViaDeepSeek(
+  title: string,
+  content: string,
+  facts: FactItem[],
+  angle?: NarrativeAngle
+): Promise<string | null> {
+  try {
+    const result = await rewriteWithAngle(title, content, facts, angle);
+    return result.content;
+  } catch {
+    return null;
   }
 }
 
