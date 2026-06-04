@@ -631,7 +631,7 @@ export function checkSentenceCount(original: string, rewritten: string): boolean
 
 // ── Fix ──
 
-async function fixDiscrepancies(
+export async function fixDiscrepancies(
   rewritten: string,
   originalFacts: FactItem[],
   diff: FactDiff
