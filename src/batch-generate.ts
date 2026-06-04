@@ -88,7 +88,7 @@ export async function batchGenerate(
         const text = source.content.substring(0, 4000);
 
         if (noLLM) {
-          const category = detectCategory(source.title, source.content) ?? "其他";
+          const category = options.category || detectCategory(source.title, source.content) || "其他";
           const article: PendingArticle = {
             title: source.title,
             content: `<p>${source.content.replace(/\n/g, "</p><p>")}</p>`,

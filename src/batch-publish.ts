@@ -1,7 +1,7 @@
 import type { Page } from "playwright";
 import * as fs from "fs";
 import * as path from "path";
-import { loadPendingArticles, archiveArticle, PendingArticle } from "./article-store.js";
+import { archiveArticle, PendingArticle } from "./article-store.js";
 import { typeTitle, insertContent, insertTopics } from "./editor.js";
 import { setDeclarations, publishArticle } from "./publish.js";
 import { formatTitle } from "./category.js";

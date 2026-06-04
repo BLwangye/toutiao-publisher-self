@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s --connect-timeout 3 http://127.0.0.1:9222/json/version)",
+      "Bash(npm install *)",
+      "Read(//c/Program Files/Google/Chrome/Application/**)",
+      "Read(//c/Program Files \\(x86\\)/Google/Chrome/Application/**)",
+      "Bash(mkdir -p \"C:/Users/bf131/.config/toutiao-chrome\")",
+      "Bash(\"C:/Program Files/Google/Chrome/Application/chrome.exe\" --remote-debugging-port=9222 --user-data-dir=\"C:/Users/bf131/.config/toutiao-chrome\")",
+      "Bash(curl -s --connect-timeout 5 http://127.0.0.1:9222/json/version)",
+      "Bash(tasklist)",
+      "Bash(npx tsx *)",
+      "Bash(node *)",
+      "Bash(taskkill /F /IM chrome.exe)",
+      "Bash(npm test *)",
+      "WebSearch",
+      "Bash(npx tsc *)"
+    ]
+  },
+  "hooks": {
+    "sessionStart": [
+      { "skill": "superpowers:using-superpowers" }
+    ]
+  }
+}
