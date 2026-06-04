@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { filterHotItems, normalizeSourceUrl } from "../src/batch-generate.js";
+import { filterHotItems } from "../src/batch-generate.js";
+import { normalizeSourceUrl } from "../src/article-store.js";
 import type { HotItem } from "../src/trend.js";
 
 describe("normalizeSourceUrl", () => {

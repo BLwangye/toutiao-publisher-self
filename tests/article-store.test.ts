@@ -27,6 +27,7 @@ import {
   loadPendingArticles,
   archiveArticle,
   getPublishedSourceUrls,
+  normalizeSourceUrl,
   PendingArticle,
 } from "../src/article-store.js";
 
@@ -321,5 +322,28 @@ describe("getPublishedSourceUrls", () => {
     const urls = await getPublishedSourceUrls(publishedDir);
     expect(urls.size).toBe(1);
     expect(urls.has("https://x.com/dup")).toBe(true);
+  });
+
+  it("normalizes toutiao URLs for consistent dedup", async () => {
+    const a1 = makeArticle({ source_url: "https://www.toutiao.com/article/123456/" });
+    const a2 = makeArticle({ source_url: "https://www.toutiao.com/trending/789/" });
+    const a3 = makeArticle({ source_url: "https://www.toutiao.com/a/999/" });
+    const a4 = makeArticle({ source_url: "https://www.toutiao.com/article/123456/?query=param" });
+
+    const f1 = buildFilename(a1, 1);
+    const f2 = buildFilename(a2, 2);
+    const f3 = buildFilename(a3, 3);
+    const f4 = buildFilename(a4, 4);
+    fs.writeFileSync(path.join(publishedDir, f1), JSON.stringify(a1, null, 2), "utf-8");
+    fs.writeFileSync(path.join(publishedDir, f2), JSON.stringify(a2, null, 2), "utf-8");
+    fs.writeFileSync(path.join(publishedDir, f3), JSON.stringify(a3, null, 2), "utf-8");
+    fs.writeFileSync(path.join(publishedDir, f4), JSON.stringify(a4, null, 2), "utf-8");
+
+    const urls = await getPublishedSourceUrls(publishedDir);
+    // a1 and a4 normalize to the same path ("article/123456"), so we expect only 3 unique values
+    expect(urls.size).toBe(3);
+    expect(urls.has("article/123456")).toBe(true);
+    expect(urls.has("trending/789")).toBe(true);
+    expect(urls.has("a/999")).toBe(true);
   });
 });

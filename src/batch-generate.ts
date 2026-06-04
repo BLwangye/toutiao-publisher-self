@@ -7,14 +7,7 @@ import {
 } from "./rewrite.js";
 import { generateTopicsViaDeepSeek } from "./topics.js";
 import { detectCategory } from "./category.js";
-import { saveArticle, getPublishedSourceUrls, PendingArticle } from "./article-store.js";
-
-/** Normalize a source URL for dedup — extract stable ID. */
-export function normalizeSourceUrl(url: string): string {
-  const m = url.match(/toutiao\.com\/(trending|article|a)\/(\d+)/);
-  if (m) return `${m[1]}/${m[2]}`;
-  return url;
-}
+import { saveArticle, getPublishedSourceUrls, normalizeSourceUrl, PendingArticle } from "./article-store.js";
 
 /** Filter and dedup hot items against already-published URLs. Sorted by rank. */
 export function filterHotItems(
@@ -49,7 +42,7 @@ export interface BatchGenerateResult {
 export async function batchGenerate(
   options: BatchGenerateOptions
 ): Promise<BatchGenerateResult> {
-  const { count, noLLM = false } = options;
+  const { count, category, noLLM = false } = options;
 
   // 1. Fetch hot list
   console.log("正在获取头条热榜...");
@@ -75,6 +68,7 @@ export async function batchGenerate(
     page = await browser.newPage();
   } catch (err) {
     console.error("无法启动无头浏览器:", (err as Error).message);
+    if (browser) await browser.close().catch(() => {});
     return { generated: 0, discarded: 0, pendingFiles: [] };
   }
 
@@ -140,7 +134,7 @@ export async function batchGenerate(
               discarded++;
               continue;
             }
-            const article = await buildArticle(fixed, item.url, angle, facts.length);
+            const article = await buildArticle(fixed, item.url, angle, facts.length, category);
             const filename = await saveArticle(article);
             pendingFiles.push(filename);
             generated++;
@@ -154,7 +148,7 @@ export async function batchGenerate(
         }
 
         // Build and save
-        const article = await buildArticle(rewritten, item.url, angle, facts.length);
+        const article = await buildArticle(rewritten, item.url, angle, facts.length, category);
         const filename = await saveArticle(article);
         pendingFiles.push(filename);
         generated++;
@@ -177,7 +171,8 @@ async function buildArticle(
   content: string,
   sourceUrl: string,
   angle: NarrativeAngle,
-  factCount: number
+  factCount: number,
+  categoryOverride?: string
 ): Promise<PendingArticle> {
   // Extract title from first h2 or first 30 chars of text
   let title = "";
@@ -197,7 +192,7 @@ async function buildArticle(
     // Topics are optional
   }
 
-  const cat = detectCategory(title, content) ?? "社会";
+  const cat = categoryOverride || detectCategory(title, content) || "社会";
 
   return {
     title,

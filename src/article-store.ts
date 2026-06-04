@@ -121,6 +121,13 @@ export async function archiveArticle(
   console.log(`已归档: ${filename}`);
 }
 
+/** Normalize a source URL for dedup — extract stable ID. */
+export function normalizeSourceUrl(url: string): string {
+  const m = url.match(/toutiao\.com\/(trending|article|a)\/(\d+)/);
+  if (m) return `${m[1]}/${m[2]}`;
+  return url;
+}
+
 export async function getPublishedSourceUrls(
   publishedDir?: string
 ): Promise<Set<string>> {
@@ -140,7 +147,7 @@ export async function getPublishedSourceUrls(
     try {
       const raw = fs.readFileSync(path.join(dir, filename), "utf-8");
       const article = JSON.parse(raw) as PendingArticle;
-      if (article.source_url) urls.add(article.source_url);
+      if (article.source_url) urls.add(normalizeSourceUrl(article.source_url));
     } catch (err) {
       console.error(`⚠ 跳过损坏文件: ${filename} — ${(err as Error).message}`);
     }
