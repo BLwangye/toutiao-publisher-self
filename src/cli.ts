@@ -31,7 +31,62 @@ program
   .option("--category <name>", "模块归属 (自动检测或手动指定)")
   .option("--from-url <url>", "从指定 URL 抓取原文并改写后发布")
   .option("--preview", "仅填充内容不发布，供人工预览")
+  .option("--batch-generate", "从热榜批量生成文章到 articles/pending/")
+  .option("--batch-publish", "发布 articles/pending/ 中的所有待发文章")
+  .option("--count <number>", "批量生成数量", "5")
+  .option("--publish-interval <min>", "批量发布间隔（分钟）", "30")
+  .option("--no-llm", "批量生成时跳过 DeepSeek 改写")
   .action(async (options) => {
+    // ── Batch Generate mode (no user Chrome needed) ──
+    if (options.batchGenerate) {
+      const { batchGenerate } = await import("./batch-generate.js");
+      const count = parseInt(options.count || "5");
+      const result = await batchGenerate({
+        count,
+        category: options.category || undefined,
+        noLLM: !options.llm,
+      });
+      console.log(`\n=== 批量生成完成 ===`);
+      console.log(`✅ ${result.generated} 篇已保存至 articles/pending/`);
+      if (result.discarded > 0) {
+        console.log(`🔴 ${result.discarded} 篇因校验失败丢弃`);
+      }
+      if (result.pendingFiles.length > 0) {
+        console.log(`待审核文章:`);
+        for (const f of result.pendingFiles) console.log(`  📄 ${f}`);
+        console.log(`\n审核后执行: npx tsx src/cli.ts --batch-publish`);
+      }
+      process.exit(0);
+    }
+
+    // ── Batch Publish mode (needs user Chrome) ──
+    if (options.batchPublish) {
+      const session = await createSession();
+      try {
+        const loggedIn = await ensureLogin(session.page);
+        if (!loggedIn) {
+          console.error("登录失败，退出");
+          process.exit(1);
+        }
+        const { batchPublish } = await import("./batch-publish.js");
+        const interval = parseInt(options.publishInterval || "30");
+        const result = await batchPublish(session.page, { intervalMinutes: interval });
+        if (result.succeeded > 0) {
+          console.log(`✅ ${result.succeeded} 篇已发布并归档`);
+        }
+        if (result.failed > 0) {
+          console.log(`❌ ${result.failed} 篇失败（保留在 articles/pending/）:`);
+          for (const f of result.failedFiles) {
+            console.log(`  - ${f.filename}: ${f.error}`);
+          }
+        }
+      } finally {
+        await closeSession(session);
+      }
+      process.exit(0);
+    }
+
+    // ── Original flow: interact, from-url, or direct publish ──
     const session = await createSession();
     let exitCode = 1;
     try {
