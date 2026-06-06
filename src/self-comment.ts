@@ -139,7 +139,7 @@ function trimComment(text: string, maxLen: number = 120): string {
 
 // ── Main pipeline ──
 
-export async function selfCommentPipeline(page: Page): Promise<void> {
+export async function selfCommentPipeline(page: Page, index?: number): Promise<void> {
   // 1. Fetch article list
   console.log("获取已发布文章列表...");
   const articles = await listPublishedArticles(page);
@@ -155,22 +155,31 @@ export async function selfCommentPipeline(page: Page): Promise<void> {
     console.log(`  [${i + 1}] ${articles[i].title.substring(0, 60)}`);
   }
 
-  // 3. Read user choice from stdin
-  const idx = await new Promise<number>((resolve, reject) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
+  // 3. Determine article index
+  let idx: number;
+  if (index !== undefined) {
+    if (index < 1 || index > articles.length) {
+      console.log(`无效编号: ${index} (有效范围 1-${articles.length})`);
+      return;
+    }
+    idx = index - 1;
+  } else {
+    idx = await new Promise<number>((resolve, reject) => {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+      rl.question(`\n选择文章编号 (1-${articles.length}): `, (answer: string) => {
+        rl.close();
+        const n = parseInt(answer.trim());
+        if (isNaN(n) || n < 1 || n > articles.length) {
+          reject(new Error(`无效编号: ${answer}`));
+        } else {
+          resolve(n - 1);
+        }
+      });
     });
-    rl.question(`\n选择文章编号 (1-${articles.length}): `, (answer: string) => {
-      rl.close();
-      const n = parseInt(answer.trim());
-      if (isNaN(n) || n < 1 || n > articles.length) {
-        reject(new Error(`无效编号: ${answer}`));
-      } else {
-        resolve(n - 1);
-      }
-    });
-  });
+  }
 
   const chosen = articles[idx];
   console.log(`\n选中: ${chosen.title}`);

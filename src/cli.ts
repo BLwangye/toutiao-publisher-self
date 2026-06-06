@@ -33,6 +33,7 @@ program
   .option("--from-url <url>", "从指定 URL 抓取原文并改写后发布")
   .option("--preview", "仅填充内容不发布，供人工预览")
   .option("--self-comment", "为自己已发布文章撰写种子评论")
+  .option("--self-comment-index <number>", "自评论文章编号（跳过交互选择）")
   .action(async (options) => {
     const session = await createSession();
     let exitCode = 1;
@@ -54,7 +55,8 @@ program
 
       // ---- Self-comment mode ----
       if (options.selfComment) {
-        await selfCommentPipeline(session.page);
+        const idx = options.selfCommentIndex ? parseInt(options.selfCommentIndex) : undefined;
+        await selfCommentPipeline(session.page, idx);
         exitCode = 0;
         return;
       }
