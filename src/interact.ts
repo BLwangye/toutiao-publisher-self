@@ -118,7 +118,7 @@ async function scrapeHomeArticles(page: Page): Promise<{ title: string; url: str
   }
 }
 
-async function extractArticleInfo(page: Page): Promise<{ title: string; content: string }> {
+export async function extractArticleInfo(page: Page): Promise<{ title: string; content: string }> {
   return page.evaluate(() => {
     const title = document.querySelector("h1")?.textContent?.trim() || "";
     const article = document.querySelector("article");
@@ -295,7 +295,7 @@ async function delay(min: number, max: number): Promise<void> {
 
 // ── Type comment into editor ──
 
-async function typeComment(page: Page, comment: string): Promise<boolean> {
+export async function typeComment(page: Page, comment: string): Promise<boolean> {
   const commentInput = page.locator(".ttp-comment-input").first();
   if (await commentInput.count() === 0) return false;
 
