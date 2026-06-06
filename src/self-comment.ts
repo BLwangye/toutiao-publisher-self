@@ -36,21 +36,19 @@ export async function listPublishedArticles(page: Page): Promise<ArticleItem[]> 
 
   return page.evaluate(() => {
     const items: { title: string; url: string }[] = [];
-    // Target: links on the management page that point to published articles.
-    // The page may have edit links (mp.toutiao.com) or public links (toutiao.com).
-    // We collect public article links first, falling back to any article-related links.
-    const links = document.querySelectorAll(
-      'a[href*="/article/"], a[href*="/graphic/articles"]'
-    );
+    const seen = new Set<string>();
+    // Public article links on management page use /item/ pattern, e.g.:
+    // https://www.toutiao.com/item/7648108038549488147/
+    const links = document.querySelectorAll('a[href*="/item/"]');
     for (const a of links) {
       const href = a.getAttribute("href") || "";
       const title = a.textContent?.trim() || "";
+      // Skip thumbnail links (empty text) and duplicates
       if (title.length < 3) continue;
-      // Normalize relative URLs
-      const full = href.startsWith("http")
-        ? href
-        : `https://mp.toutiao.com${href.startsWith("/") ? "" : "/"}${href}`;
-      items.push({ title, url: full });
+      if (!href.includes("toutiao.com")) continue;
+      if (seen.has(href)) continue;
+      seen.add(href);
+      items.push({ title, url: href });
     }
     return items;
   });
