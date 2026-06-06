@@ -1,5 +1,6 @@
 import { Page } from "playwright";
 import * as child_process from "child_process";
+import * as readline from "readline";
 import { extractArticleInfo, typeComment } from "./interact.js";
 
 // ── Env ──
@@ -156,7 +157,7 @@ export async function selfCommentPipeline(page: Page): Promise<void> {
 
   // 3. Read user choice from stdin
   const idx = await new Promise<number>((resolve, reject) => {
-    const rl = require("readline").createInterface({
+    const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
     });
