@@ -14,12 +14,24 @@
       "Bash(taskkill /F /IM chrome.exe)",
       "Bash(npm test *)",
       "WebSearch",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe *)",
+      "Bash(curl *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ]
   },
   "hooks": {
-    "sessionStart": [
-      { "skill": "superpowers:using-superpowers" }
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "skill",
+            "skill": "superpowers:using-superpowers"
+          }
+        ]
+      }
     ]
   }
 }

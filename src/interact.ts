@@ -435,10 +435,6 @@ export async function interactArticles(page: Page, count: number = 5): Promise<v
       await page.goto(articleUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
       await page.waitForTimeout(8000);
 
-      // Mark as processed immediately so we don't repeat on retry
-      commentedUrls.add(normalizeUrl(article.url));
-      saveCommented(commentedUrls);
-
       // Read article content
       const { title, content } = await extractArticleInfo(page);
       console.log(`  正文: ${content.length} 字`);
@@ -470,6 +466,9 @@ export async function interactArticles(page: Page, count: number = 5): Promise<v
           if (ok) {
             console.log(`  ✅ 评论成功`);
             commentCount++;
+            commentedUrls.add(normalizeUrl(article.url));
+            commentedUrls.add(normalizeUrl(articleUrl));
+            saveCommented(commentedUrls);
           } else {
             console.log("  ⚠ 评论提交失败");
           }

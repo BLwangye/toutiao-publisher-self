@@ -63,7 +63,45 @@ export async function scrapeArticle(
       document.querySelector("h1")?.textContent?.trim() || "";
 
     // ── Find the main content container ──
-    const article = document.querySelector("article");
+    // Try specific selectors first, never fall back to document.body
+    const contentSelectors = [
+      "article",
+      '[class*="article-content"]',
+      '[class*="articleContent"]',
+      ".article-body",
+      ".post-content",
+      ".rich_media_content",
+      '[data-component="article"]',
+      "main",
+    ];
+    let container: HTMLElement | null = null;
+    for (const sel of contentSelectors) {
+      const el = document.querySelector(sel);
+      if (el && el.textContent && el.textContent.trim().length > 50) {
+        container = el.cloneNode(true) as HTMLElement;
+        break;
+      }
+    }
+
+    // No content container found — return empty, caller will skip
+    if (!container) return { title, content: "", html: "" };
+
+    // ── Detect error/deleted pages ──
+    const fullText = container.textContent?.trim() || "";
+    const errorPatterns = [
+      /内容不存在/,
+      /内容已被删除/,
+      /页面不存在/,
+      /404/,
+      /抱歉[，,]你访问/,
+      /已下架/,
+      /该文章/,
+    ];
+    for (const p of errorPatterns) {
+      if (p.test(fullText) && fullText.length < 200) {
+        return { title, content: "", html: "" };
+      }
+    }
 
     // Remove non-content elements before extracting text
     const excludeSelectors = [
@@ -76,7 +114,6 @@ export async function scrapeArticle(
       '[data-component*="related"]',
       '[aria-hidden="true"]',
     ];
-    const container = (article ?? document.body).cloneNode(true) as HTMLElement;
     for (const sel of excludeSelectors) {
       for (const el of container.querySelectorAll(sel)) {
         el.remove();
@@ -127,7 +164,7 @@ export async function scrapeArticle(
     }
 
     const content = paragraphs.join("\n");
-    const html = (article ?? document.body).innerHTML;
+    const html = container.innerHTML;
     return { title, content, html };
   });
 

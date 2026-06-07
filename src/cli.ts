@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { createSession, closeSession } from "./browser.js";
 import { ensureLogin } from "./login.js";
-import { typeTitle, insertContent, insertTopics } from "./editor.js";
+import { typeTitle, insertContent, insertTopics, pasteImage } from "./editor.js";
 import { interactArticles } from "./interact.js";
 import { selfCommentPipeline } from "./self-comment.js";
 import { setDeclarations, publishArticle } from "./publish.js";
@@ -9,9 +9,45 @@ import { detectCategory, formatTitle, CATEGORY_KEYWORDS } from "./category.js";
 import { extractTopics, formatTopics, generateTopicsViaDeepSeek } from "./topics.js";
 import { rewritePipeline, formatContentLists } from "./rewrite.js";
 import { detectSuggestions, clickSuggestionImage } from "./suggestions.js";
+import { generateImage, downloadImages } from "./jimeng.js";
 import { CONFIG } from "./config.js";
+import * as fs from "fs";
+import * as path from "path";
 
 const program = new Command();
+const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
+
+function findReusableImages(category: string | null, count: number): string[] {
+  const roots: string[] = [];
+  if (category) roots.push(path.join(process.cwd(), "images", category));
+  roots.push(path.join(process.cwd(), "images"));
+
+  const files: { file: string; mtime: number }[] = [];
+  const seen = new Set<string>();
+
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    const stack = [root];
+    while (stack.length > 0) {
+      const dir = stack.pop()!;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(full);
+          continue;
+        }
+        if (!IMAGE_EXTS.has(path.extname(entry.name).toLowerCase()) || seen.has(full)) continue;
+        seen.add(full);
+        files.push({ file: full, mtime: fs.statSync(full).mtimeMs });
+      }
+    }
+  }
+
+  return files
+    .sort((a, b) => b.mtime - a.mtime)
+    .slice(0, count)
+    .map((item) => item.file);
+}
 
 program
   .name("toutiao-publisher")
@@ -107,9 +143,62 @@ program
       let contentHtml = formatContentLists(options.content);
       await insertContent(session.page, contentHtml);
 
-      // Step 6: Get suggested images from 头条内容建议 (if --no-images)
+      // Step 6: Images
       let bodyImageCount = 0;
-      if (!options.images) {
+      const requestedImageCount = Math.max(1, parseInt(options.imageCount, 10) || 3);
+      let imageFiles = typeof options.imageFiles === "string"
+        ? options.imageFiles.split(",").map((p: string) => p.trim()).filter(Boolean)
+        : [];
+
+      if (options.images === false) {
+        console.log("已跳过图片步骤");
+      } else if (imageFiles.length > 0) {
+        // Explicit files win over generated/reused images.
+      } else if (options.reuseImages) {
+        imageFiles = findReusableImages(category ?? null, requestedImageCount);
+        if (imageFiles.length > 0) {
+          console.log(`复用本地图片: ${imageFiles.length} 张`);
+        } else {
+          console.log("未找到可复用图片，改用头条建议配图");
+        }
+      } else if (typeof options.imageKeyword === "string" && options.imageKeyword.trim()) {
+        const keywords = options.imageKeyword.split(",").map((kw: string) => kw.trim()).filter(Boolean);
+        const selectedKeywords = keywords.slice(0, requestedImageCount);
+        const generated: string[] = [];
+        for (const keyword of selectedKeywords) {
+          console.log(`生成配图: ${keyword}`);
+          const urls = await generateImage({ prompt: keyword });
+          const downloaded = await downloadImages(urls.slice(0, 1), keyword, options.imageCategory ?? category ?? undefined);
+          generated.push(...downloaded);
+        }
+        imageFiles = generated.slice(0, requestedImageCount);
+      }
+
+      if (options.images === false) {
+        // handled above
+      } else if (imageFiles.length > 0) {
+        console.log(`使用指定图片文件: ${imageFiles.length} 张`);
+        await session.page.evaluate(() => {
+          const pm = document.querySelector(".ProseMirror");
+          if (!pm) return;
+          const sel = window.getSelection();
+          if (!sel) return;
+          const range = document.createRange();
+          range.selectNodeContents(pm);
+          range.collapse(false);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        });
+        await session.page.waitForTimeout(200);
+
+        for (const imagePath of imageFiles) {
+          await session.page.keyboard.press("Enter");
+          await session.page.waitForTimeout(200);
+          await pasteImage(session.page, imagePath);
+          bodyImageCount++;
+        }
+        console.log(`${bodyImageCount} 张指定图片已插入正文`);
+      } else {
         const suggestion = await detectSuggestions(session.page);
         if (suggestion.imageCount === 0) {
           console.log("无建议配图");
@@ -192,29 +281,33 @@ program
       }
 
       // Step 7: Topics — DeepSeek generates candidates, #-search, failed ones removed
-      let topicLabels = await generateTopicsViaDeepSeek(options.content, options.title);
-      if (topicLabels.length < 3) {
-        // Pad with keyword matching fallbacks
-        const fallbacks = extractTopics(options.content, category ?? null);
-        for (const f of fallbacks) {
-          if (!topicLabels.includes(f)) topicLabels.push(f);
-        }
-      }
-      if (topicLabels.length > 0) {
-        console.log(`话题候选 (${topicLabels.length}): ${formatTopics(topicLabels)}`);
-        const inserted = await insertTopics(session.page, topicLabels);
-        if (inserted < 3) {
-          console.log(`仅匹配 ${inserted} 个话题，尝试补充...`);
-          // Try category keywords as extra fallback
-          const extras = (CATEGORY_KEYWORDS[category ?? "健康"] || [])
-            .filter(kw => !topicLabels.includes(kw))
-            .slice(0, 5);
-          if (extras.length > 0) {
-            await insertTopics(session.page, extras);
+      if (options.topics === false) {
+        console.log("已跳过话题标签");
+      } else {
+        let topicLabels = await generateTopicsViaDeepSeek(options.content, options.title);
+        if (topicLabels.length < 3) {
+          // Pad with keyword matching fallbacks
+          const fallbacks = extractTopics(options.content, category ?? null);
+          for (const f of fallbacks) {
+            if (!topicLabels.includes(f)) topicLabels.push(f);
           }
         }
-      } else {
-        console.log("未检测到话题关键词");
+        if (topicLabels.length > 0) {
+          console.log(`话题候选 (${topicLabels.length}): ${formatTopics(topicLabels)}`);
+          const inserted = await insertTopics(session.page, topicLabels);
+          if (inserted < 3) {
+            console.log(`仅匹配 ${inserted} 个话题，尝试补充...`);
+            // Try category keywords as extra fallback
+            const extras = (CATEGORY_KEYWORDS[category ?? "健康"] || [])
+              .filter(kw => !topicLabels.includes(kw))
+              .slice(0, 5);
+            if (extras.length > 0) {
+              await insertTopics(session.page, extras);
+            }
+          }
+        } else {
+          console.log("未检测到话题关键词");
+        }
       }
 
       // Step 8: Cover — select "单图", first body image becomes cover
